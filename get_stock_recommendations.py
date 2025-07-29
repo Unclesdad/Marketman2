@@ -39,7 +39,7 @@ def main():
     
     # Optional: Save results to file
     import json
-    results_file = f"market_analysis_{results['timestamp'].replace(':', '-').replace(' ', '_')}.json"
+    results_file = f"results/market_analysis_{results['timestamp'].replace(':', '-').replace(' ', '_')}.json"
     
     # Convert results to JSON-serializable format
     json_results = {
