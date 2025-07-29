@@ -27,51 +27,62 @@ class RedditSentimentAnalyzer:
     def get_reddit_sentiment(self, ticker: str) -> Dict:
         """Get sentiment from Reddit discussions"""
         
-        # Use pushshift.io API (free Reddit archive)
-        base_url = "https://api.pushshift.io/reddit/search/submission"
+        # Use Reddit API (pushshift is deprecated, use alternative approach)
+        base_url = "https://www.reddit.com/r/wallstreetbets/search.json"
         
         sentiments = []
         
-        # Search multiple subreddits
+        # Search multiple subreddits using direct Reddit JSON API
         subreddits = ['wallstreetbets', 'stocks', 'investing', 'StockMarket']
         
         for subreddit in subreddits:
-            params = {
-                'q': ticker,
-                'subreddit': subreddit,
-                'size': 100,
-                'after': '7d',  # Last 7 days
-                'sort': 'score',
-                'sort_type': 'num_comments'
-            }
-            
             try:
-                response = requests.get(base_url, params=params, headers=self.headers)
+                # Reddit JSON API endpoint
+                url = f"https://www.reddit.com/r/{subreddit}/search.json"
+                params = {
+                    'q': f'${ticker} OR {ticker}',
+                    'restrict_sr': 'true',
+                    'sort': 'new',
+                    'limit': 25,
+                    't': 'week'  # Last week
+                }
+                
+                response = requests.get(url, params=params, headers=self.headers)
                 if response.status_code == 200:
                     data = response.json()
                     
-                    for post in data.get('data', []):
-                        # Simple sentiment scoring based on title and score
-                        title = post.get('title', '').lower()
-                        score = post.get('score', 0)
-                        comments = post.get('num_comments', 0)
+                    for post in data.get('data', {}).get('children', []):
+                        post_data = post.get('data', {})
+                        title = post_data.get('title', '').lower()
+                        score = post_data.get('score', 0)
+                        comments = post_data.get('num_comments', 0)
+                        selftext = post_data.get('selftext', '').lower()
                         
-                        # Basic sentiment rules
+                        # Combined text for analysis
+                        text = f"{title} {selftext}"
+                        
+                        # Enhanced sentiment rules
                         sentiment_score = 0
-                        if any(word in title for word in ['calls', 'buy', 'long', 'bull', 'moon', 'squeeze']):
-                            sentiment_score = 1
-                        elif any(word in title for word in ['puts', 'sell', 'short', 'bear', 'crash', 'dump']):
-                            sentiment_score = -1
+                        bullish_words = ['calls', 'buy', 'long', 'bull', 'moon', 'squeeze', 'rocket', 'diamond', 'hodl', 'to the moon']
+                        bearish_words = ['puts', 'sell', 'short', 'bear', 'crash', 'dump', 'tank', 'red', 'down']
                         
-                        # Weight by engagement
-                        if sentiment_score != 0:
-                            weight = min(1 + (score + comments) / 1000, 5)
-                            sentiments.append(sentiment_score * weight)
+                        bullish_count = sum(1 for word in bullish_words if word in text)
+                        bearish_count = sum(1 for word in bearish_words if word in text)
+                        
+                        if bullish_count > bearish_count:
+                            sentiment_score = min(1.0, bullish_count / 3)
+                        elif bearish_count > bullish_count:
+                            sentiment_score = -min(1.0, bearish_count / 3)
+                        
+                        # Weight by engagement and recency
+                        if sentiment_score != 0 and score > 5:
+                            engagement_weight = min(3.0, 1 + (score + comments) / 100)
+                            sentiments.append(sentiment_score * engagement_weight)
                 
-                time.sleep(0.5)  # Rate limit
+                time.sleep(1)  # Rate limit to be respectful
                 
             except Exception as e:
-                print(f"Reddit API error for {ticker}: {e}")
+                print(f"Reddit API error for {subreddit}/{ticker}: {e}")
         
         if sentiments:
             return {
@@ -90,36 +101,72 @@ class RSSNewsSentimentAnalyzer:
     """
     
     def __init__(self):
-        # Free financial RSS feeds
+        # Enhanced financial RSS feeds with better coverage
         self.feeds = {
-            'reuters': 'https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best',
-            'yahoo': 'https://finance.yahoo.com/rss/',
-            'investing': 'https://www.investing.com/rss/news.rss',
-            'marketwatch': 'https://feeds.marketwatch.com/marketwatch/topstories'
+            'yahoo_finance': 'https://feeds.finance.yahoo.com/rss/2.0/headline',
+            'marketwatch': 'https://feeds.marketwatch.com/marketwatch/topstories',
+            'seeking_alpha': 'https://seekingalpha.com/feed.xml',
+            'benzinga': 'https://www.benzinga.com/feed',
+            'forbes_investing': 'https://www.forbes.com/investing/feed/',
+            'cnbc_markets': 'https://www.cnbc.com/id/100003114/device/rss/rss.html',
+            'zacks': 'https://www.zacks.com/commentary/rss'
         }
         
-        # Simple keyword-based sentiment
+        # Enhanced sentiment keywords
         self.positive_words = [
-            'surge', 'gain', 'rise', 'jump', 'advance', 'rally', 'bullish',
-            'upgrade', 'beat', 'strong', 'record', 'growth', 'profit', 'buy'
+            'surge', 'gain', 'rise', 'jump', 'advance', 'rally', 'bullish', 'soar',
+            'upgrade', 'beat', 'strong', 'record', 'growth', 'profit', 'buy', 'outperform',
+            'upside', 'momentum', 'breakthrough', 'boost', 'optimistic', 'exceed', 
+            'success', 'winning', 'leader', 'innovate', 'expansion', 'positive'
         ]
         
         self.negative_words = [
-            'fall', 'drop', 'decline', 'plunge', 'crash', 'bear', 'loss',
-            'downgrade', 'miss', 'weak', 'concern', 'risk', 'sell', 'warning'
+            'fall', 'drop', 'decline', 'plunge', 'crash', 'bear', 'loss', 'slump',
+            'downgrade', 'miss', 'weak', 'concern', 'risk', 'sell', 'warning', 'underperform',
+            'downside', 'pressure', 'challenge', 'struggle', 'pessimistic', 'disappoint',
+            'failure', 'losing', 'lag', 'cut', 'reduce', 'negative', 'volatile'
+        ]
+        
+        # Company-specific indicators
+        self.strength_indicators = [
+            'earnings beat', 'revenue growth', 'market share', 'new product',
+            'partnership', 'acquisition', 'expansion', 'innovation'
+        ]
+        
+        self.weakness_indicators = [
+            'earnings miss', 'revenue decline', 'market loss', 'lawsuit',
+            'investigation', 'layoffs', 'bankruptcy', 'debt'
         ]
     
     def analyze_text_sentiment(self, text: str) -> float:
-        """Simple keyword-based sentiment analysis"""
+        """Enhanced keyword-based sentiment analysis"""
         text_lower = text.lower()
         
+        # Count basic sentiment words
         positive_count = sum(1 for word in self.positive_words if word in text_lower)
         negative_count = sum(1 for word in self.negative_words if word in text_lower)
         
-        if positive_count + negative_count == 0:
+        # Count strength/weakness indicators (higher weight)
+        strength_count = sum(2 for indicator in self.strength_indicators if indicator in text_lower)
+        weakness_count = sum(2 for indicator in self.weakness_indicators if indicator in text_lower)
+        
+        # Combine counts
+        total_positive = positive_count + strength_count
+        total_negative = negative_count + weakness_count
+        
+        if total_positive + total_negative == 0:
             return 0
         
-        return (positive_count - negative_count) / (positive_count + negative_count)
+        # Normalized sentiment score
+        sentiment = (total_positive - total_negative) / (total_positive + total_negative)
+        
+        # Apply intensity modifiers
+        if 'very' in text_lower or 'extremely' in text_lower or 'significantly' in text_lower:
+            sentiment *= 1.5
+        elif 'slightly' in text_lower or 'somewhat' in text_lower:
+            sentiment *= 0.7
+            
+        return max(-1.0, min(1.0, sentiment))
     
     def get_news_sentiment(self, ticker: str) -> Dict:
         """Get sentiment from RSS feeds"""
@@ -136,8 +183,18 @@ class RSSNewsSentimentAnalyzer:
                     summary = entry.get('summary', '')
                     full_text = f"{title} {summary}"
                     
-                    # Check if article mentions the ticker
-                    if ticker.upper() in full_text.upper() or ticker.lower() in full_text.lower():
+                    # Enhanced ticker matching
+                    ticker_patterns = [
+                        ticker.upper(),
+                        f'${ticker.upper()}',
+                        f'{ticker.lower()}',
+                        f' {ticker.upper()} ',
+                        f'({ticker.upper()})',
+                        f'{ticker.upper()}:',
+                        f'{ticker.upper()}.'
+                    ]
+                    
+                    if any(pattern in full_text.upper() for pattern in ticker_patterns):
                         sentiment = self.analyze_text_sentiment(full_text)
                         all_sentiments.append(sentiment)
                         relevant_articles += 1

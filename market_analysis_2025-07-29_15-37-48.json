@@ -1,0 +1,175 @@
+{
+  "timestamp": "2025-07-29 15:37:48",
+  "summary": {
+    "strong_buys": 0,
+    "moderate_buys": 136,
+    "strong_shorts": 0,
+    "moderate_shorts": 12,
+    "neutral_count": 40
+  },
+  "top_buys": [
+    {
+      "symbol": "AAPL",
+      "confidence": 0.7418730323361756,
+      "prediction": "up",
+      "current_price": 214.0500030517578,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "MSFT",
+      "confidence": 0.7418730323361756,
+      "prediction": "up",
+      "current_price": 512.5,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "GOOGL",
+      "confidence": 0.7418730323361756,
+      "prediction": "up",
+      "current_price": 192.5800018310547,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "GOOG",
+      "confidence": 0.7418730323361756,
+      "prediction": "up",
+      "current_price": 193.4199981689453,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "TSM",
+      "confidence": 0.7418730323361756,
+      "prediction": "up",
+      "current_price": 242.75,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "AVGO",
+      "confidence": 0.7418730323361756,
+      "prediction": "up",
+      "current_price": 294.29998779296875,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "ADBE",
+      "confidence": 0.7418730323361756,
+      "prediction": "up",
+      "current_price": 369.4700012207031,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "CRM",
+      "confidence": 0.7418730323361756,
+      "prediction": "up",
+      "current_price": 270.25,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "AMD",
+      "confidence": 0.7418730323361756,
+      "prediction": "up",
+      "current_price": 173.66000366210938,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "QCOM",
+      "confidence": 0.7418730323361756,
+      "prediction": "up",
+      "current_price": 161.0500030517578,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    }
+  ],
+  "top_shorts": [
+    {
+      "symbol": "LCID",
+      "confidence": 0.7418730323361756,
+      "prediction": "down",
+      "current_price": 2.7899999618530273,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "BA",
+      "confidence": 0.7418730323361756,
+      "prediction": "down",
+      "current_price": 236.41000366210938,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "XPEV",
+      "confidence": 0.7035214795091581,
+      "prediction": "down",
+      "current_price": 18.940000534057617,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "CSCO",
+      "confidence": 0.6918730323361756,
+      "prediction": "down",
+      "current_price": 67.91999816894531,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "SLB",
+      "confidence": 0.6796259859336532,
+      "prediction": "down",
+      "current_price": 36.0,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "MRK",
+      "confidence": 0.6459842644125481,
+      "prediction": "down",
+      "current_price": 84.05999755859375,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "SEDG",
+      "confidence": 0.6418730323361757,
+      "prediction": "down",
+      "current_price": 27.059999465942383,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "BMY",
+      "confidence": 0.6418730323361757,
+      "prediction": "down",
+      "current_price": 47.5099983215332,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "REGN",
+      "confidence": 0.6418730323361757,
+      "prediction": "down",
+      "current_price": 558.6300048828125,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "CVX",
+      "confidence": 0.6418730323361757,
+      "prediction": "down",
+      "current_price": 156.27999877929688,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    }
+  ],
+  "failed_symbols": []
+}

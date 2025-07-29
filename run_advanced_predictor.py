@@ -27,6 +27,8 @@ import json
 import feedparser
 import matplotlib.pyplot as plt
 import seaborn as sns
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
 
 # Import components from the other files
 from advanced_stock_predictor import (
@@ -52,7 +54,7 @@ class EnhancedStockPredictor(AdvancedStockPredictor):
         self.failed_downloads = []
         
     def fetch_data_with_retry(self, symbols: List[str], start_date: str, end_date: str, 
-                             batch_size: int = 20, max_retries: int = 3) -> Dict[str, pd.DataFrame]:
+                             batch_size: int = 50, max_retries: int = 3) -> Dict[str, pd.DataFrame]:
         """Fetch historical data with retry logic and batch processing"""
         data = {}
         failed = []
@@ -82,6 +84,9 @@ class EnhancedStockPredictor(AdvancedStockPredictor):
                             if isinstance(df.columns, pd.MultiIndex):
                                 # Flatten MultiIndex columns - take the first level (price type)
                                 df.columns = df.columns.get_level_values(0)
+                            
+                            # Remove duplicate columns (sometimes yfinance returns duplicates)
+                            df = df.loc[:, ~df.columns.duplicated()]
                             
                             # Reset index properly
                             df = df.reset_index()
@@ -161,11 +166,117 @@ class EnhancedStockPredictor(AdvancedStockPredictor):
                 'news_sentiment': 0
             }
     
+    def _process_single_symbol(self, symbol: str, df: pd.DataFrame, use_sentiment: bool, market_indices: Dict) -> Dict:
+        """Process a single symbol with features and sentiment - for parallel execution"""
+        try:
+            # Check for cached processed features
+            features_cache_file = f"data/features_{symbol}_{use_sentiment}.pkl"
+            if os.path.exists(features_cache_file):
+                try:
+                    import pickle
+                    with open(features_cache_file, 'rb') as f:
+                        cached_features = pickle.load(f)
+                    
+                    if len(cached_features) > 100:
+                        available_features = [f for f in self.feature_engineer.feature_names 
+                                           if f in cached_features.columns]
+                        if len(available_features) > 10:
+                            return {
+                                'success': True,
+                                'features': cached_features[available_features].values,
+                                'targets': cached_features['target'].values,
+                                'symbol_list': [symbol] * len(cached_features),
+                                'feature_count': len(available_features),
+                                'cached': True
+                            }
+                except Exception:
+                    pass  # If cache loading fails, proceed with normal processing
+            
+            # Check basic data quality
+            if len(df) < 100:
+                return {'success': False, 'reason': f'insufficient data ({len(df)} rows)'}
+            
+            required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+            if not all(col in df.columns for col in required_cols):
+                return {'success': False, 'reason': 'missing required columns'}
+            
+            if df['Close'].isna().all() or (df['Close'] <= 0).any():
+                return {'success': False, 'reason': 'invalid price data'}
+            
+            # Engineer technical features
+            features_df = self.feature_engineer.engineer_features(df, market_indices)
+            
+            # Add sentiment features
+            if use_sentiment:
+                sentiment = self.get_sentiment_features(symbol)
+                for key, value in sentiment.items():
+                    features_df[f'sentiment_{key}'] = value
+            else:
+                # Use neutral sentiment
+                for key in ['mean_sentiment', 'sentiment_std', 'positive_ratio', 
+                           'negative_ratio', 'num_articles', 'reddit_sentiment', 'news_sentiment']:
+                    features_df[f'sentiment_{key}'] = 0 if 'sentiment' in key else 0.5
+            
+            # Create target (next week's return direction)
+            future_returns = features_df['Close'].pct_change(5).shift(-5)
+            features_df['target'] = np.where(
+                future_returns > 0.02, 2,  # Up
+                np.where(future_returns < -0.02, 0,  # Down
+                        1))  # Neutral
+            
+            # Drop NaN values
+            features_df = features_df.dropna()
+            
+            if len(features_df) > 100 and len(self.feature_engineer.feature_names) > 0:
+                available_features = [f for f in self.feature_engineer.feature_names 
+                                   if f in features_df.columns]
+                if len(available_features) > 10:
+                    
+                    # Cache processed features for future runs
+                    try:
+                        import pickle
+                        with open(features_cache_file, 'wb') as f:
+                            pickle.dump(features_df, f)
+                    except Exception as e:
+                        pass  # Don't fail on cache errors
+                    
+                    return {
+                        'success': True,
+                        'features': features_df[available_features].values,
+                        'targets': features_df['target'].values,
+                        'symbol_list': [symbol] * len(features_df),
+                        'feature_count': len(available_features),
+                        'cached': False
+                    }
+                else:
+                    return {'success': False, 'reason': f'insufficient features ({len(available_features)})'}
+            else:
+                return {'success': False, 'reason': f'insufficient processed data ({len(features_df)} rows)'}
+                
+        except Exception as e:
+            return {'success': False, 'reason': str(e)}
+    
     def prepare_training_data_enhanced(self, data: Dict[str, pd.DataFrame], 
                                      use_sentiment: bool = True,
                                      sentiment_batch_size: int = 10) -> Dict:
         """Enhanced data preparation with real sentiment analysis"""
         print("\nPreparing training data with sentiment analysis...")
+        
+        # Check for cached training data
+        cache_filename = f"data/training_data_{'sentiment' if use_sentiment else 'nosent'}_{len(data)}stocks.pkl"
+        if os.path.exists(cache_filename):
+            try:
+                print(f"Loading cached training data from {cache_filename}")
+                import pickle
+                with open(cache_filename, 'rb') as f:
+                    cached_data = pickle.load(f)
+                # Restore feature names to the feature engineer
+                self.feature_engineer.feature_names = cached_data['feature_names']
+                print(f"Loaded cached data: {len(set(cached_data['symbols']))} stocks, {len(cached_data['features'])} samples")
+                print("✅ Using cached data - skipping all processing!")
+                return cached_data
+            except Exception as e:
+                print(f"Error loading cache: {e}, proceeding with fresh processing...")
         
         all_features = []
         all_targets = []
@@ -186,65 +297,30 @@ class EnhancedStockPredictor(AdvancedStockPredictor):
             batch_symbols = symbols_list[i:i + sentiment_batch_size]
             print(f"\nProcessing batch {i//sentiment_batch_size + 1}/{(len(symbols_list)-1)//sentiment_batch_size + 1}")
             
-            for symbol in tqdm(batch_symbols, desc="Engineering features"):
-                try:
-                    df = data[symbol]
-                    
-                    # Check basic data quality first
-                    if len(df) < 100:
-                        print(f"Skipping {symbol}: insufficient data ({len(df)} rows)")
-                        continue
-                    
-                    required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-                    if not all(col in df.columns for col in required_cols):
-                        print(f"Skipping {symbol}: missing required columns")
-                        continue
-                    
-                    # Check for valid price data
-                    if df['Close'].isna().all() or (df['Close'] <= 0).any():
-                        print(f"Skipping {symbol}: invalid price data")
-                        continue
-                    
-                    # Engineer technical features
-                    features_df = self.feature_engineer.engineer_features(df, market_indices)
-                    
-                    # Add sentiment features
-                    if use_sentiment:
-                        sentiment = self.get_sentiment_features(symbol)
-                        for key, value in sentiment.items():
-                            features_df[f'sentiment_{key}'] = value
-                    else:
-                        # Use neutral sentiment
-                        for key in ['mean_sentiment', 'sentiment_std', 'positive_ratio', 
-                                   'negative_ratio', 'num_articles', 'reddit_sentiment', 'news_sentiment']:
-                            features_df[f'sentiment_{key}'] = 0 if 'sentiment' in key else 0.5
-                    
-                    # Create target (next week's return direction)
-                    future_returns = features_df['Close'].pct_change(5).shift(-5)
-                    features_df['target'] = np.where(
-                        future_returns > 0.02, 2,  # Up
-                        np.where(future_returns < -0.02, 0,  # Down
-                                1))  # Neutral
-                    
-                    # Drop NaN values
-                    features_df = features_df.dropna()
-                    
-                    if len(features_df) > 100 and len(self.feature_engineer.feature_names) > 0:
-                        available_features = [f for f in self.feature_engineer.feature_names 
-                                           if f in features_df.columns]
-                        if len(available_features) > 10:
-                            all_features.append(features_df[available_features].values)
-                            all_targets.append(features_df['target'].values)
-                            all_symbols.extend([symbol] * len(features_df))
-                            print(f"Successfully processed {symbol}: {len(available_features)} features")
+            # Use ThreadPoolExecutor for parallel processing within batch
+            max_workers = min(16, len(batch_symbols))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = []
+                
+                for symbol in batch_symbols:
+                    future = executor.submit(self._process_single_symbol, symbol, data[symbol], use_sentiment, market_indices)
+                    futures.append((symbol, future))
+                
+                # Collect results with progress bar
+                for symbol, future in tqdm(futures, desc="Engineering features"):
+                    try:
+                        result = future.result()
+                        if result['success']:
+                            all_features.append(result['features'])
+                            all_targets.append(result['targets'])
+                            all_symbols.extend(result['symbol_list'])
+                            cached_text = " (cached)" if result['cached'] else ""
+                            print(f"Successfully processed {symbol}: {result['feature_count']} features{cached_text}")
                         else:
-                            print(f"Skipping {symbol}: insufficient features ({len(available_features)})")
-                    else:
-                        print(f"Skipping {symbol}: insufficient processed data ({len(features_df)} rows)")
-                        
-                except Exception as e:
-                    print(f"Error processing {symbol}: {e}")
-                    continue
+                            print(f"Skipping {symbol}: {result['reason']}")
+                    except Exception as e:
+                        print(f"Error processing {symbol}: {e}")
+                        continue
             
             # Small delay between sentiment batches
             if use_sentiment and i + sentiment_batch_size < len(symbols_list):
@@ -258,12 +334,24 @@ class EnhancedStockPredictor(AdvancedStockPredictor):
         print(f"\nPrepared data for {len(set(all_symbols))} stocks")
         print(f"Total samples: {sum(len(f) for f in all_features)}")
         
-        return {
+        # Save processed data to cache
+        training_data = {
             'features': np.vstack(all_features),
             'targets': np.hstack(all_targets),
             'symbols': all_symbols,
             'feature_names': self.feature_engineer.feature_names
         }
+        
+        try:
+            print(f"Saving training data to cache: {cache_filename}")
+            import pickle
+            with open(cache_filename, 'wb') as f:
+                pickle.dump(training_data, f)
+            print("Training data cached successfully!")
+        except Exception as e:
+            print(f"Warning: Could not save cache: {e}")
+        
+        return training_data
 
 def run_advanced_training(ticker_selection='all', use_sentiment=True, quick_mode=False):
     """
@@ -304,12 +392,49 @@ def run_advanced_training(ticker_selection='all', use_sentiment=True, quick_mode
         tickers = tickers[:20]  # Use fewer stocks in quick mode
         print("Quick mode: Using 1 year of data and 20 stocks")
     else:
-        years = 2
+        years = 4
     
     end_date = datetime.now().strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=365 * years)).strftime('%Y-%m-%d')
     
-    # Fetch data
+    # Check for cached training data BEFORE fetching any data
+    cache_filename = f"data/training_data_{'sentiment' if use_sentiment else 'nosent'}_{len(tickers)}stocks.pkl"
+    if os.path.exists(cache_filename):
+        try:
+            print(f"🚀 Found cached training data: {cache_filename}")
+            print("⚡ Loading cached data - skipping data fetch and processing!")
+            import pickle
+            with open(cache_filename, 'rb') as f:
+                train_data = pickle.load(f)
+            # Restore feature names
+            predictor.feature_engineer.feature_names = train_data['feature_names']
+            print(f"✅ Loaded: {len(set(train_data['symbols']))} stocks, {len(train_data['features'])} samples")
+            
+            # Skip directly to training
+            print("\n" + "="*60)
+            print("Training ensemble models...")
+            print("="*60)
+            predictor.train_ensemble(train_data)
+            
+            # Save model
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            model_path = f'advanced_model_{timestamp}.pth'
+            predictor.save_model(model_path)
+            
+            results = {
+                'model_path': f'data/models/{model_path}',
+                'train_samples': len(train_data['features']),
+                'num_stocks': len(set(train_data['symbols'])),
+                'feature_count': len(train_data['feature_names'])
+            }
+            
+            return predictor, results
+            
+        except Exception as e:
+            print(f"❌ Error loading cache: {e}")
+            print("📦 Proceeding with fresh data collection...")
+    
+    # Fetch data only if no cache
     print(f"\nDate range: {start_date} to {end_date}")
     data = predictor.fetch_data_with_retry(tickers, start_date, end_date)
     

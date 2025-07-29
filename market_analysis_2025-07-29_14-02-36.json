@@ -1,0 +1,175 @@
+{
+  "timestamp": "2025-07-29 14:02:36",
+  "summary": {
+    "strong_buys": 124,
+    "moderate_buys": 12,
+    "strong_shorts": 8,
+    "moderate_shorts": 4,
+    "neutral_count": 40
+  },
+  "top_buys": [
+    {
+      "symbol": "RKLB",
+      "confidence": 0.9994366765022278,
+      "prediction": "up",
+      "current_price": 45.11000061035156,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "U",
+      "confidence": 0.9992117881774902,
+      "prediction": "up",
+      "current_price": 33.4900016784668,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "AMD",
+      "confidence": 0.9987236857414246,
+      "prediction": "up",
+      "current_price": 173.66000366210938,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "KLAC",
+      "confidence": 0.9979725480079651,
+      "prediction": "up",
+      "current_price": 923.1500244140625,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "LYFT",
+      "confidence": 0.9979420304298401,
+      "prediction": "up",
+      "current_price": 14.15999984741211,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "TJX",
+      "confidence": 0.9975799322128296,
+      "prediction": "up",
+      "current_price": 125.38999938964844,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "LOW",
+      "confidence": 0.9962055683135986,
+      "prediction": "up",
+      "current_price": 229.99000549316406,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "DIA",
+      "confidence": 0.9961709380149841,
+      "prediction": "up",
+      "current_price": 448.3399963378906,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "WDAY",
+      "confidence": 0.9952279329299927,
+      "prediction": "up",
+      "current_price": 238.0399932861328,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    },
+    {
+      "symbol": "OKTA",
+      "confidence": 0.9934878349304199,
+      "prediction": "up",
+      "current_price": 97.83999633789062,
+      "action": "BUY",
+      "reason": "Strong bullish signal"
+    }
+  ],
+  "top_shorts": [
+    {
+      "symbol": "LCID",
+      "confidence": 0.9805666208267212,
+      "prediction": "down",
+      "current_price": 2.7899999618530273,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "BA",
+      "confidence": 0.9683195948600769,
+      "prediction": "down",
+      "current_price": 236.41000366210938,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "CSCO",
+      "confidence": 0.9096566438674927,
+      "prediction": "down",
+      "current_price": 67.91999816894531,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "SEDG",
+      "confidence": 0.8967265486717224,
+      "prediction": "down",
+      "current_price": 27.059999465942383,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "CVX",
+      "confidence": 0.8775123953819275,
+      "prediction": "down",
+      "current_price": 156.27999877929688,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "WDC",
+      "confidence": 0.8671403527259827,
+      "prediction": "down",
+      "current_price": 68.98999786376953,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "REGN",
+      "confidence": 0.8382624387741089,
+      "prediction": "down",
+      "current_price": 558.6300048828125,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "BMY",
+      "confidence": 0.8212485313415527,
+      "prediction": "down",
+      "current_price": 47.5099983215332,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "XPEV",
+      "confidence": 0.7906966209411621,
+      "prediction": "down",
+      "current_price": 18.940000534057617,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    },
+    {
+      "symbol": "SLB",
+      "confidence": 0.7641686201095581,
+      "prediction": "down",
+      "current_price": 36.0,
+      "action": "SELL/SHORT",
+      "reason": "Strong bearish signal"
+    }
+  ],
+  "failed_symbols": []
+}
