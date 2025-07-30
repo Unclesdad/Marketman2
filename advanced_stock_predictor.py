@@ -19,26 +19,33 @@ import ta
 import warnings
 warnings.filterwarnings('ignore')
 from typing import Dict, List, Tuple, Optional
-import requests
-from bs4 import BeautifulSoup
-from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
-import networkx as nx
-from scipy import stats
 import joblib
 import os
-import json
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
 import time
+import sys
+import contextlib
+from io import StringIO
+
+# Context manager to suppress yfinance errors
+@contextlib.contextmanager
+def suppress_stdout_stderr():
+    """Context manager to suppress stdout and stderr during yfinance downloads"""
+    with open(os.devnull, "w") as devnull:
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr  
+        sys.stdout = devnull
+        sys.stderr = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
 
 # Download required NLTK data
-try:
-    import nltk
-    nltk.download('vader_lexicon', quiet=True)
-    from nltk.sentiment import SentimentIntensityAnalyzer
-except:
-    pass
+# NLTK removed - using external sentiment analysis from sentiment_analysis_implementation.py
 
 class AdvancedFeatureEngineering:
     """Implements novel feature engineering techniques from recent papers"""
@@ -266,7 +273,786 @@ class AdvancedFeatureEngineering:
         
         return features
     
-    def engineer_features(self, df: pd.DataFrame, market_data: Optional[Dict] = None) -> pd.DataFrame:
+    def create_enhanced_technical_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create enhanced technical analysis features"""
+        features = df.copy()
+        
+        # Ichimoku Cloud System
+        high_9 = df['High'].rolling(9).max()
+        low_9 = df['Low'].rolling(9).min()
+        high_26 = df['High'].rolling(26).max()
+        low_26 = df['Low'].rolling(26).min()
+        high_52 = df['High'].rolling(52).max()
+        low_52 = df['Low'].rolling(52).min()
+        
+        features['ichimoku_conversion'] = (high_9 + low_9) / 2
+        features['ichimoku_base'] = (high_26 + low_26) / 2
+        features['ichimoku_span_a'] = (features['ichimoku_conversion'] + features['ichimoku_base']) / 2
+        features['ichimoku_span_b'] = (high_52 + low_52) / 2
+        features['ichimoku_signal'] = np.where(df['Close'] > features['ichimoku_span_a'], 1, 
+                                             np.where(df['Close'] < features['ichimoku_span_a'], -1, 0))
+        
+        # Advanced Stochastic
+        features['stochastic_k'] = ((df['Close'] - df['Low'].rolling(14).min()) / 
+                                   (df['High'].rolling(14).max() - df['Low'].rolling(14).min()) * 100)
+        features['stochastic_d'] = features['stochastic_k'].rolling(3).mean()
+        
+        # Commodity Channel Index
+        typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+        sma_tp = typical_price.rolling(20).mean()
+        mad = typical_price.rolling(20).apply(lambda x: np.mean(np.abs(x - x.mean())))
+        features['cci'] = (typical_price - sma_tp) / (0.015 * mad)
+        
+        # Williams %R
+        features['williams_r'] = ((df['High'].rolling(14).max() - df['Close']) / 
+                                 (df['High'].rolling(14).max() - df['Low'].rolling(14).min()) * -100)
+        
+        return features
+    
+    def create_microstructure_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create market microstructure approximation features"""
+        features = df.copy()
+        
+        # Candlestick patterns
+        features['body_size'] = abs(df['Close'] - df['Open']) / df['Open']
+        features['upper_shadow'] = (df['High'] - np.maximum(df['Open'], df['Close'])) / df['Open']
+        features['lower_shadow'] = (np.minimum(df['Open'], df['Close']) - df['Low']) / df['Open']
+        
+        # Intraday patterns
+        features['opening_gap'] = (df['Open'] - df['Close'].shift(1)) / df['Close'].shift(1)
+        features['intraday_range'] = (df['High'] - df['Low']) / df['Open']
+        features['closing_position'] = (df['Close'] - df['Low']) / (df['High'] - df['Low'])
+        
+        # Volume-price relationships
+        features['volume_price_ratio'] = df['Volume'] / df['Close']
+        features['volume_momentum'] = df['Volume'].pct_change(5)
+        features['relative_volume'] = df['Volume'] / df['Volume'].rolling(20).mean()
+        
+        return features
+    
+    def create_advanced_momentum_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create advanced momentum and trend features"""
+        features = df.copy()
+        
+        # Multiple timeframe momentum
+        for period in [3, 7, 14, 21]:
+            features[f'momentum_{period}'] = ((df['Close'] - df['Close'].shift(period)) / 
+                                            df['Close'].shift(period) * 100)
+        
+        # MACD variations
+        ema_12 = df['Close'].ewm(span=12).mean()
+        ema_26 = df['Close'].ewm(span=26).mean()
+        features['macd_line'] = ema_12 - ema_26
+        features['macd_signal'] = features['macd_line'].ewm(span=9).mean()
+        features['macd_histogram'] = features['macd_line'] - features['macd_signal']
+        
+        return features
+    
+    def create_options_flow_features(self, features: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
+        """Create options flow and sentiment indicators (approximated)"""
+        enhanced_features = features.copy()
+        
+        # VIX-based approximations (using VIX data if available)
+        try:
+            # Try to get VIX data for volatility analysis
+            vix_data = self.fetch_data(['^VIX'], 
+                                     df.index[0].strftime('%Y-%m-%d'),
+                                     df.index[-1].strftime('%Y-%m-%d'))
+            
+            if '^VIX' in vix_data:
+                vix_df = vix_data['^VIX']
+                vix_aligned = vix_df.reindex(df.index, method='ffill')
+                
+                # VIX-based features
+                enhanced_features['vix_level'] = vix_aligned['Close']
+                enhanced_features['vix_momentum'] = vix_aligned['Close'].pct_change(5)
+                enhanced_features['vix_mean_reversion'] = (vix_aligned['Close'] - vix_aligned['Close'].rolling(20).mean()) / vix_aligned['Close'].rolling(20).std()
+                
+                # Implied volatility approximations
+                realized_vol = df['Close'].pct_change().rolling(20).std() * np.sqrt(252)
+                enhanced_features['vol_risk_premium'] = enhanced_features['vix_level'] / 100 - realized_vol
+                
+        except:
+            # Fallback: create synthetic options indicators
+            pass
+        
+        # Options sentiment approximations based on price action
+        # High volume + large moves often indicate options activity
+        volume_surge = features['relative_volume'] > 2.0
+        price_surge = abs(df['Close'].pct_change()) > 0.03
+        
+        enhanced_features['options_activity_proxy'] = (volume_surge & price_surge).astype(int)
+        
+        # Put/Call ratio approximation
+        # When stock falls with high volume, likely put activity
+        # When stock rises with high volume, likely call activity
+        daily_return = df['Close'].pct_change()
+        enhanced_features['put_call_proxy'] = np.where(
+            daily_return < -0.02, features['relative_volume'] * -1,
+            np.where(daily_return > 0.02, features['relative_volume'], 0)
+        )
+        
+        # Gamma exposure approximation
+        # High volatility days with mean reversion suggest gamma effects
+        enhanced_features['gamma_proxy'] = (
+            (abs(daily_return) > 0.025) & 
+            (daily_return * daily_return.shift(1) < 0)
+        ).astype(int) * features['relative_volume']
+        
+        # Dark pool approximation
+        # Large moves with relatively low volume might indicate dark pool activity
+        enhanced_features['dark_pool_proxy'] = np.where(
+            (abs(daily_return) > 0.015) & (features['relative_volume'] < 0.8),
+            abs(daily_return), 0
+        )
+        
+        return enhanced_features
+    
+    def create_derivatives_features(self, features: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
+        """Create derivatives-based features"""
+        enhanced_features = features.copy()
+        
+        # Volatility surface approximations
+        for period in [5, 10, 20, 30]:
+            vol = df['Close'].pct_change().rolling(period).std() * np.sqrt(252)
+            enhanced_features[f'realized_vol_{period}d'] = vol
+        
+        # Volatility term structure
+        enhanced_features['vol_term_structure'] = (
+            enhanced_features.get('realized_vol_5d', 0) - 
+            enhanced_features.get('realized_vol_30d', 0)
+        )
+        
+        # Skew approximations (based on tail movements)
+        returns = df['Close'].pct_change()
+        for period in [10, 20]:
+            # Downside vs upside volatility
+            downside_vol = returns[returns < 0].rolling(period).std()
+            upside_vol = returns[returns > 0].rolling(period).std()
+            enhanced_features[f'vol_skew_{period}d'] = (downside_vol - upside_vol).reindex(df.index).fillna(0)
+        
+        # Futures basis approximation (using forward returns)
+        for days in [30, 60, 90]:
+            if len(df) > days:
+                forward_return = df['Close'].shift(-days) / df['Close'] - 1
+                current_return = df['Close'].pct_change(days)
+                enhanced_features[f'basis_{days}d'] = forward_return - current_return
+        
+        return enhanced_features
+    
+    def create_fundamental_features(self, features: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """Create fundamental analysis features using available financial data"""
+        enhanced_features = features.copy()
+        
+        try:
+            # Get stock info from yfinance for fundamental data
+            import yfinance as yf
+            stock = yf.Ticker(symbol)
+            info = stock.info
+            
+            # Financial metrics (constant across time series - simplified approach)
+            # In a more sophisticated system, you'd fetch quarterly data and create time series
+            
+            # Valuation metrics
+            pe_ratio = info.get('trailingPE', info.get('forwardPE', 15))  # Default to market average
+            pb_ratio = info.get('priceToBook', 2.5)
+            ps_ratio = info.get('priceToSalesTrailing12Months', 3.0)
+            peg_ratio = info.get('pegRatio', 1.0)
+            
+            # Growth metrics
+            revenue_growth = info.get('revenueGrowth', 0.05)  # Default 5%
+            earnings_growth = info.get('earningsGrowthQuarterly', 0.05)
+            
+            # Profitability metrics
+            profit_margin = info.get('profitMargins', 0.1)
+            operating_margin = info.get('operatingMargins', 0.15)
+            roe = info.get('returnOnEquity', 0.15)
+            roa = info.get('returnOnAssets', 0.08)
+            
+            # Financial health
+            debt_to_equity = info.get('debtToEquity', 50) / 100  # Convert to ratio
+            current_ratio = info.get('currentRatio', 1.5)
+            quick_ratio = info.get('quickRatio', 1.0)
+            
+            # Market metrics
+            market_cap = info.get('marketCap', 1e9)
+            beta = info.get('beta', 1.0)
+            
+            # Analyst metrics
+            target_mean_price = info.get('targetMeanPrice', features['Close'].iloc[-1])
+            recommendation_mean = info.get('recommendationMean', 3.0)  # 1=Strong Buy, 5=Strong Sell
+            
+            # Create derived fundamental features
+            enhanced_features['pe_ratio'] = pe_ratio
+            enhanced_features['pb_ratio'] = pb_ratio
+            enhanced_features['ps_ratio'] = ps_ratio
+            enhanced_features['peg_ratio'] = peg_ratio
+            
+            # Value score (lower is better for value)
+            enhanced_features['value_score'] = (pe_ratio / 20) + (pb_ratio / 3) + (ps_ratio / 4)
+            
+            # Growth score
+            enhanced_features['growth_score'] = revenue_growth + earnings_growth
+            
+            # Profitability score
+            enhanced_features['profitability_score'] = profit_margin + operating_margin + (roe / 2)
+            
+            # Financial health score
+            enhanced_features['financial_health'] = current_ratio + quick_ratio - (debt_to_equity / 2)
+            
+            # Size factor
+            enhanced_features['size_factor'] = np.log(market_cap / 1e9)  # Log of market cap in billions
+            
+            # Beta-adjusted momentum
+            enhanced_features['beta_adj_momentum'] = enhanced_features.get('momentum_20d', 0) / max(beta, 0.1)
+            
+            # Price vs target analysis
+            current_price = features['Close'].iloc[-1]
+            enhanced_features['price_to_target'] = current_price / max(target_mean_price, current_price * 0.5)
+            
+            # Analyst sentiment (inverted so lower recommendation_mean = more bullish)
+            enhanced_features['analyst_sentiment'] = (6 - recommendation_mean) / 5  # Scale to 0-1
+            
+            # Fundamental momentum approximation (simplified)
+            # In practice, you'd compare current metrics to historical averages
+            enhanced_features['fundamental_momentum'] = (
+                (revenue_growth - 0.05) +  # Above/below 5% growth
+                (earnings_growth - 0.05) +
+                (profit_margin - 0.1)     # Above/below 10% margin
+            ) / 3
+            
+            # Quality score
+            enhanced_features['quality_score'] = (roe + roa + profit_margin) / 3
+            
+            # Earnings surprise proxy (using recent price momentum as proxy)
+            price_momentum = features['Close'].pct_change(5).iloc[-1]
+            enhanced_features['earnings_surprise_proxy'] = np.tanh(price_momentum * 10)  # Bounded surprise
+            
+            # Sector relative metrics (simplified using beta as sector proxy)
+            enhanced_features['sector_relative_pe'] = pe_ratio / (15 * max(beta, 0.5))
+            enhanced_features['sector_relative_growth'] = revenue_growth / max(beta * 0.05, 0.01)
+            
+        except Exception as e:
+            print(f"Warning: Could not fetch fundamental data for {symbol}: {e}")
+            # Fill with neutral/market average values
+            enhanced_features['pe_ratio'] = 15
+            enhanced_features['pb_ratio'] = 2.5
+            enhanced_features['ps_ratio'] = 3.0
+            enhanced_features['peg_ratio'] = 1.0
+            enhanced_features['value_score'] = 2.0
+            enhanced_features['growth_score'] = 0.1
+            enhanced_features['profitability_score'] = 0.4
+            enhanced_features['financial_health'] = 2.0
+            enhanced_features['size_factor'] = 1.0
+            enhanced_features['beta_adj_momentum'] = 0
+            enhanced_features['price_to_target'] = 1.0
+            enhanced_features['analyst_sentiment'] = 0.5
+            enhanced_features['fundamental_momentum'] = 0
+            enhanced_features['quality_score'] = 0.15
+            enhanced_features['earnings_surprise_proxy'] = 0
+            enhanced_features['sector_relative_pe'] = 1.0
+            enhanced_features['sector_relative_growth'] = 1.0
+        
+        return enhanced_features
+    
+    def create_alternative_data_features(self, features: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """Create features from alternative data sources"""
+        enhanced_features = features.copy()
+        
+        try:
+            # Economic indicators (fetch key economic data)
+            economic_symbols = ['^TNX', '^IRX', 'UUP', 'GLD', 'SLV', 'USO', 'UNG']  # 10Y, 3M rates, dollar ETF, gold, silver, oil, gas
+            
+            # Get economic data aligned to stock dates
+            start_date = features.index[0].strftime('%Y-%m-%d')
+            end_date = features.index[-1].strftime('%Y-%m-%d')
+            
+            import yfinance as yf
+            
+            # Treasury yields and dollar strength
+            try:
+                tnx_data = yf.download('^TNX', start=start_date, end=end_date, progress=False)
+                if not tnx_data.empty and isinstance(tnx_data.columns, pd.MultiIndex):
+                    tnx_data.columns = tnx_data.columns.get_level_values(0)
+                
+                if not tnx_data.empty and 'Close' in tnx_data.columns:
+                    tnx_aligned = tnx_data['Close'].reindex(features.index, method='ffill')
+                    enhanced_features['treasury_10y'] = tnx_aligned
+                    enhanced_features['treasury_10y_momentum'] = tnx_aligned.pct_change(20)
+                    # Yield curve proxy (10Y level vs recent average)
+                    enhanced_features['yield_curve_proxy'] = tnx_aligned / tnx_aligned.rolling(60).mean() - 1
+            except:
+                enhanced_features['treasury_10y'] = 2.5  # Default value
+                enhanced_features['treasury_10y_momentum'] = 0
+                enhanced_features['yield_curve_proxy'] = 0
+            
+            # Dollar strength (using UUP ETF as proxy for dollar index)
+            try:
+                with suppress_stdout_stderr():
+                    uup_data = yf.download('UUP', start=start_date, end=end_date, progress=False)
+                if not uup_data.empty and isinstance(uup_data.columns, pd.MultiIndex):
+                    uup_data.columns = uup_data.columns.get_level_values(0)
+                
+                if not uup_data.empty and 'Close' in uup_data.columns:
+                    uup_aligned = uup_data['Close'].reindex(features.index, method='ffill')
+                    enhanced_features['dollar_strength'] = uup_aligned / uup_aligned.mean()  # Normalize around mean
+                    enhanced_features['dollar_momentum'] = uup_aligned.pct_change(10)
+            except Exception:
+                enhanced_features['dollar_strength'] = 1.0
+                enhanced_features['dollar_momentum'] = 0
+            
+            # Commodity exposure (Gold as safe haven)
+            try:
+                gld_data = yf.download('GLD', start=start_date, end=end_date, progress=False)
+                if not gld_data.empty and isinstance(gld_data.columns, pd.MultiIndex):
+                    gld_data.columns = gld_data.columns.get_level_values(0)
+                
+                if not gld_data.empty and 'Close' in gld_data.columns:
+                    gld_aligned = gld_data['Close'].reindex(features.index, method='ffill')
+                    gld_returns = gld_aligned.pct_change()
+                    stock_returns = features['Close'].pct_change()
+                    
+                    # Gold correlation (safe haven indicator)
+                    enhanced_features['gold_correlation'] = stock_returns.rolling(60).corr(gld_returns)
+                    enhanced_features['gold_momentum'] = gld_returns.rolling(20).mean()
+            except:
+                enhanced_features['gold_correlation'] = 0
+                enhanced_features['gold_momentum'] = 0
+            
+            # Oil price correlation (for energy sensitivity)
+            try:
+                uso_data = yf.download('USO', start=start_date, end=end_date, progress=False)
+                if not uso_data.empty and isinstance(uso_data.columns, pd.MultiIndex):
+                    uso_data.columns = uso_data.columns.get_level_values(0)
+                
+                if not uso_data.empty and 'Close' in uso_data.columns:
+                    uso_aligned = uso_data['Close'].reindex(features.index, method='ffill')
+                    uso_returns = uso_aligned.pct_change()
+                    stock_returns = features['Close'].pct_change()
+                    
+                    enhanced_features['oil_correlation'] = stock_returns.rolling(60).corr(uso_returns)
+                    enhanced_features['oil_price_momentum'] = uso_returns.rolling(10).mean()
+            except:
+                enhanced_features['oil_correlation'] = 0
+                enhanced_features['oil_price_momentum'] = 0
+            
+            # Crypto correlation (Bitcoin as risk-on indicator)
+            try:
+                btc_data = yf.download('BTC-USD', start=start_date, end=end_date, progress=False)
+                if not btc_data.empty and isinstance(btc_data.columns, pd.MultiIndex):
+                    btc_data.columns = btc_data.columns.get_level_values(0)
+                
+                if not btc_data.empty and 'Close' in btc_data.columns:
+                    btc_aligned = btc_data['Close'].reindex(features.index, method='ffill')
+                    btc_returns = btc_aligned.pct_change()
+                    stock_returns = features['Close'].pct_change()
+                    
+                    enhanced_features['crypto_correlation'] = stock_returns.rolling(30).corr(btc_returns)
+                    enhanced_features['crypto_momentum'] = btc_returns.rolling(20).mean()
+                    # Crypto volatility (risk-on/risk-off)
+                    enhanced_features['crypto_volatility'] = btc_returns.rolling(20).std()
+            except:
+                enhanced_features['crypto_correlation'] = 0
+                enhanced_features['crypto_momentum'] = 0
+                enhanced_features['crypto_volatility'] = 0.02
+            
+            # Sector rotation signals using sector ETFs
+            sector_etfs = {
+                'XLK': 'tech',  # Technology
+                'XLF': 'financials',  # Financials  
+                'XLE': 'energy',  # Energy
+                'XLV': 'healthcare',  # Healthcare
+                'XLI': 'industrials',  # Industrials
+                'XLY': 'consumer_disc',  # Consumer Discretionary
+                'XLP': 'consumer_staples'  # Consumer Staples
+            }
+            
+            for etf_symbol, sector_name in sector_etfs.items():
+                try:
+                    etf_data = yf.download(etf_symbol, start=start_date, end=end_date, progress=False)
+                    if not etf_data.empty and isinstance(etf_data.columns, pd.MultiIndex):
+                        etf_data.columns = etf_data.columns.get_level_values(0)
+                    
+                    if not etf_data.empty and 'Close' in etf_data.columns:
+                        etf_aligned = etf_data['Close'].reindex(features.index, method='ffill')
+                        etf_returns = etf_aligned.pct_change()
+                        stock_returns = features['Close'].pct_change()
+                        
+                        # Sector relative performance
+                        enhanced_features[f'{sector_name}_relative_perf'] = (
+                            stock_returns.rolling(20).mean() - etf_returns.rolling(20).mean()
+                        )
+                        # Sector correlation
+                        enhanced_features[f'{sector_name}_correlation'] = (
+                            stock_returns.rolling(60).corr(etf_returns)
+                        )
+                        
+                        break  # Only do one sector to avoid too many features
+                        
+                except:
+                    enhanced_features[f'{sector_name}_relative_perf'] = 0
+                    enhanced_features[f'{sector_name}_correlation'] = 0.5
+                    break
+            
+            # Market stress indicators
+            # High-low spread as market stress proxy
+            enhanced_features['market_stress_proxy'] = (
+                (features['High'] - features['Low']) / features['Close']
+            ).rolling(20).mean()
+            
+            # Volume-price divergence (alternative measure)
+            price_momentum = features['Close'].pct_change(10)
+            volume_momentum = features['Volume'].pct_change(10)
+            enhanced_features['volume_price_divergence'] = (
+                price_momentum.rolling(10).mean() - 
+                (volume_momentum / volume_momentum.std()).rolling(10).mean()
+            )
+            
+            # Options market proxies (using VIX term structure when available)
+            try:
+                # VIX9D for short-term fear
+                vix9d_data = yf.download('^VIX9D', start=start_date, end=end_date, progress=False)
+                vix_data = yf.download('^VIX', start=start_date, end=end_date, progress=False)
+                
+                if not vix9d_data.empty and not vix_data.empty:
+                    # Handle MultiIndex if present
+                    if isinstance(vix9d_data.columns, pd.MultiIndex):
+                        vix9d_data.columns = vix9d_data.columns.get_level_values(0)
+                    if isinstance(vix_data.columns, pd.MultiIndex):
+                        vix_data.columns = vix_data.columns.get_level_values(0)
+                    
+                    if 'Close' in vix9d_data.columns and 'Close' in vix_data.columns:
+                        vix9d_aligned = vix9d_data['Close'].reindex(features.index, method='ffill')
+                        vix_aligned = vix_data['Close'].reindex(features.index, method='ffill')
+                        
+                        # Term structure slope (short vs medium term volatility expectations)
+                        enhanced_features['vix_term_structure'] = (vix_aligned - vix9d_aligned) / vix9d_aligned
+                        enhanced_features['short_term_fear'] = vix9d_aligned / 20  # Normalized
+            except:
+                enhanced_features['vix_term_structure'] = 0
+                enhanced_features['short_term_fear'] = 1.0
+            
+            # Economic calendar proxy using historical patterns (simplified)
+            # Month-end effects
+            enhanced_features['month_end_effect'] = np.where(
+                features.index.day >= 25, 1, 0  # Last week of month
+            )
+            
+            # Quarter-end effects  
+            enhanced_features['quarter_end_effect'] = np.where(
+                (features.index.month % 3 == 0) & (features.index.day >= 25), 1, 0
+            )
+            
+            # Week day effects
+            enhanced_features['monday_effect'] = np.where(features.index.dayofweek == 0, 1, 0)
+            enhanced_features['friday_effect'] = np.where(features.index.dayofweek == 4, 1, 0)
+            
+        except Exception as e:
+            print(f"Warning: Could not fetch alternative data for {symbol}: {e}")
+            # Fill with neutral values
+            alt_features = [
+                'treasury_10y', 'treasury_10y_momentum', 'yield_curve_proxy',
+                'dollar_strength', 'dollar_momentum', 'gold_correlation', 'gold_momentum',
+                'oil_correlation', 'oil_price_momentum', 'crypto_correlation', 
+                'crypto_momentum', 'crypto_volatility', 'tech_relative_perf', 
+                'tech_correlation', 'market_stress_proxy', 'volume_price_divergence',
+                'vix_term_structure', 'short_term_fear', 'month_end_effect',
+                'quarter_end_effect', 'monday_effect', 'friday_effect'
+            ]
+            
+            for feature in alt_features:
+                if 'correlation' in feature:
+                    enhanced_features[feature] = 0.1
+                elif 'effect' in feature:
+                    enhanced_features[feature] = 0
+                elif 'momentum' in feature:
+                    enhanced_features[feature] = 0
+                elif feature == 'treasury_10y':
+                    enhanced_features[feature] = 2.5
+                elif feature == 'dollar_strength':
+                    enhanced_features[feature] = 1.0
+                elif feature == 'short_term_fear':
+                    enhanced_features[feature] = 1.0
+                else:
+                    enhanced_features[feature] = 0
+        
+        return enhanced_features
+    
+    def create_macro_intermarket_features(self, features: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """Create macro and intermarket analysis features"""
+        enhanced_features = features.copy()
+        
+        try:
+            start_date = features.index[0].strftime('%Y-%m-%d')
+            end_date = features.index[-1].strftime('%Y-%m-%d')
+            
+            import yfinance as yf
+            
+            # Global equity indices for intermarket analysis
+            global_indices = {
+                '^GSPC': 'sp500',      # S&P 500
+                '^DJI': 'dow',         # Dow Jones  
+                '^IXIC': 'nasdaq',     # NASDAQ
+                '^RUT': 'russell2k',   # Russell 2000 (small caps)
+                '^FTSE': 'ftse',       # FTSE 100 (UK)
+                '^N225': 'nikkei',     # Nikkei 225 (Japan)
+                'EWZ': 'brazil',       # Brazil ETF
+                'FXI': 'china'         # China ETF
+            }
+            
+            stock_returns = features['Close'].pct_change()
+            
+            # Calculate correlations with major indices
+            for index_symbol, index_name in global_indices.items():
+                try:
+                    index_data = yf.download(index_symbol, start=start_date, end=end_date, progress=False)
+                    if not index_data.empty and isinstance(index_data.columns, pd.MultiIndex):
+                        index_data.columns = index_data.columns.get_level_values(0)
+                    
+                    if not index_data.empty and 'Close' in index_data.columns:
+                        index_aligned = index_data['Close'].reindex(features.index, method='ffill')
+                        index_returns = index_aligned.pct_change()
+                        
+                        # Rolling correlation
+                        enhanced_features[f'{index_name}_correlation'] = (
+                            stock_returns.rolling(60).corr(index_returns)
+                        )
+                        
+                        # Beta calculation (simplified)
+                        rolling_cov = stock_returns.rolling(60).cov(index_returns)
+                        rolling_var = index_returns.rolling(60).var()
+                        enhanced_features[f'{index_name}_beta'] = rolling_cov / rolling_var
+                        
+                        # Relative strength vs index
+                        enhanced_features[f'{index_name}_relative_strength'] = (
+                            stock_returns.rolling(20).mean() / index_returns.rolling(20).mean()
+                        )
+                        
+                        # Only process first 3 indices to avoid too many features
+                        if len([k for k in enhanced_features.keys() if 'correlation' in k]) >= 3:
+                            break
+                            
+                except Exception as e:
+                    enhanced_features[f'{index_name}_correlation'] = 0.5
+                    enhanced_features[f'{index_name}_beta'] = 1.0
+                    enhanced_features[f'{index_name}_relative_strength'] = 1.0
+                    break
+            
+            # Bond market analysis (yield curve and credit spreads)
+            try:
+                # Treasury yields
+                tlt_data = yf.download('TLT', start=start_date, end=end_date, progress=False)  # 20+ Year Treasury
+                iei_data = yf.download('IEI', start=start_date, end=end_date, progress=False)  # 3-7 Year Treasury
+                
+                if not tlt_data.empty and not iei_data.empty:
+                    if isinstance(tlt_data.columns, pd.MultiIndex):
+                        tlt_data.columns = tlt_data.columns.get_level_values(0)
+                    if isinstance(iei_data.columns, pd.MultiIndex):
+                        iei_data.columns = iei_data.columns.get_level_values(0)
+                    
+                    if 'Close' in tlt_data.columns and 'Close' in iei_data.columns:
+                        tlt_aligned = tlt_data['Close'].reindex(features.index, method='ffill')
+                        iei_aligned = iei_data['Close'].reindex(features.index, method='ffill')
+                        
+                        tlt_returns = tlt_aligned.pct_change()
+                        iei_returns = iei_aligned.pct_change()
+                        
+                        # Bond-stock correlation (flight to quality indicator)
+                        enhanced_features['bond_correlation'] = stock_returns.rolling(60).corr(tlt_returns)
+                        
+                        # Yield curve slope proxy (long vs medium duration bond performance)
+                        enhanced_features['yield_curve_slope'] = (
+                            tlt_returns.rolling(20).mean() - iei_returns.rolling(20).mean()
+                        )
+                        
+            except:
+                enhanced_features['bond_correlation'] = -0.2  # Typical stock-bond correlation
+                enhanced_features['yield_curve_slope'] = 0
+            
+            # Credit risk analysis
+            try:
+                # High yield bonds vs treasuries (credit spread proxy)
+                hyg_data = yf.download('HYG', start=start_date, end=end_date, progress=False)  # High Yield ETF
+                lqd_data = yf.download('LQD', start=start_date, end=end_date, progress=False)  # Investment Grade ETF
+                
+                if not hyg_data.empty and not lqd_data.empty:
+                    if isinstance(hyg_data.columns, pd.MultiIndex):
+                        hyg_data.columns = hyg_data.columns.get_level_values(0)
+                    if isinstance(lqd_data.columns, pd.MultiIndex):
+                        lqd_data.columns = lqd_data.columns.get_level_values(0)
+                    
+                    if 'Close' in hyg_data.columns and 'Close' in lqd_data.columns:
+                        hyg_aligned = hyg_data['Close'].reindex(features.index, method='ffill')
+                        lqd_aligned = lqd_data['Close'].reindex(features.index, method='ffill')
+                        
+                        hyg_returns = hyg_aligned.pct_change()
+                        lqd_returns = lqd_aligned.pct_change()
+                        
+                        # Credit spread proxy (high yield vs investment grade performance)
+                        enhanced_features['credit_spread_proxy'] = hyg_returns - lqd_returns
+                        
+                        # Credit risk correlation
+                        enhanced_features['credit_risk_correlation'] = stock_returns.rolling(60).corr(hyg_returns)
+                        
+            except:
+                enhanced_features['credit_spread_proxy'] = 0
+                enhanced_features['credit_risk_correlation'] = 0.3
+            
+            # Currency and international factors
+            try:
+                # Currency exposure through ETFs
+                uup_data = yf.download('UUP', start=start_date, end=end_date, progress=False)  # Dollar Bull ETF
+                
+                if not uup_data.empty:
+                    if isinstance(uup_data.columns, pd.MultiIndex):
+                        uup_data.columns = uup_data.columns.get_level_values(0)
+                    
+                    if 'Close' in uup_data.columns:
+                        uup_aligned = uup_data['Close'].reindex(features.index, method='ffill')
+                        uup_returns = uup_aligned.pct_change()
+                        
+                        # Dollar strength correlation
+                        enhanced_features['dollar_correlation'] = stock_returns.rolling(60).corr(uup_returns)
+                        
+            except:
+                enhanced_features['dollar_correlation'] = -0.1  # Typical for US stocks
+            
+            # Commodity complex analysis
+            try:
+                # Broad commodity exposure
+                dji_data = yf.download('DJP', start=start_date, end=end_date, progress=False)  # Commodity ETF
+                
+                if not dji_data.empty:
+                    if isinstance(dji_data.columns, pd.MultiIndex):
+                        dji_data.columns = dji_data.columns.get_level_values(0)
+                    
+                    if 'Close' in dji_data.columns:
+                        dji_aligned = dji_data['Close'].reindex(features.index, method='ffill')
+                        dji_returns = dji_aligned.pct_change()
+                        
+                        # Commodity correlation
+                        enhanced_features['commodity_correlation'] = stock_returns.rolling(60).corr(dji_returns)
+                        
+                        # Inflation hedge factor
+                        enhanced_features['inflation_hedge_factor'] = (
+                            enhanced_features['commodity_correlation'] * dji_returns.rolling(20).mean()
+                        )
+                        
+            except:
+                enhanced_features['commodity_correlation'] = 0.1
+                enhanced_features['inflation_hedge_factor'] = 0
+            
+            # Real estate correlation (REITs)
+            try:
+                reit_data = yf.download('VNQ', start=start_date, end=end_date, progress=False)  # REIT ETF
+                
+                if not reit_data.empty:
+                    if isinstance(reit_data.columns, pd.MultiIndex):
+                        reit_data.columns = reit_data.columns.get_level_values(0)
+                    
+                    if 'Close' in reit_data.columns:
+                        reit_aligned = reit_data['Close'].reindex(features.index, method='ffill')
+                        reit_returns = reit_aligned.pct_change()
+                        
+                        # REIT correlation (interest rate sensitivity)
+                        enhanced_features['reit_correlation'] = stock_returns.rolling(60).corr(reit_returns)
+                        
+            except:
+                enhanced_features['reit_correlation'] = 0.3
+            
+            # Market regime indicators
+            # Risk-on vs Risk-off sentiment
+            try:
+                # Risk-on: Emerging markets vs safe havens
+                eem_data = yf.download('EEM', start=start_date, end=end_date, progress=False)  # Emerging Markets
+                
+                if not eem_data.empty:
+                    if isinstance(eem_data.columns, pd.MultiIndex):
+                        eem_data.columns = eem_data.columns.get_level_values(0)
+                    
+                    if 'Close' in eem_data.columns:
+                        eem_aligned = eem_data['Close'].reindex(features.index, method='ffill')
+                        eem_returns = eem_aligned.pct_change()
+                        
+                        # Risk-on correlation
+                        enhanced_features['risk_on_correlation'] = stock_returns.rolling(60).corr(eem_returns)
+                        
+                        # Risk appetite proxy
+                        enhanced_features['risk_appetite'] = eem_returns.rolling(10).mean()
+                        
+            except:
+                enhanced_features['risk_on_correlation'] = 0.4
+                enhanced_features['risk_appetite'] = 0
+            
+            # Volatility regime analysis
+            vix_momentum = enhanced_features.get('vix_momentum', 0)
+            if isinstance(vix_momentum, (int, float)):
+                vix_momentum = pd.Series([vix_momentum] * len(features), index=features.index)
+            
+            # Combine macro factors into regime score
+            enhanced_features['macro_regime_score'] = (
+                enhanced_features.get('risk_appetite', 0) * 0.3 +
+                enhanced_features.get('credit_spread_proxy', 0) * -0.3 +  # Negative because wider spreads = worse
+                enhanced_features.get('yield_curve_slope', 0) * 0.2 +
+                enhanced_features.get('commodity_correlation', 0) * enhanced_features.get('inflation_hedge_factor', 0) * 0.2
+            )
+            
+            # Global growth proxy (combination of international correlations)
+            global_growth_proxy = 0
+            correlation_features = [f for f in enhanced_features.columns if 'correlation' in f and any(x in f for x in ['sp500', 'nasdaq', 'ftse'])]
+            if correlation_features:
+                for feature in correlation_features[:3]:  # Use first 3 correlations
+                    global_growth_proxy += enhanced_features.get(feature, 0.5) / len(correlation_features)
+            enhanced_features['global_growth_proxy'] = global_growth_proxy
+            
+            # Intermarket divergence signals
+            # When correlations break down, it often signals regime change
+            historical_correlations = [
+                enhanced_features.get('sp500_correlation', 0.5),
+                enhanced_features.get('bond_correlation', -0.2),
+                enhanced_features.get('commodity_correlation', 0.1)
+            ]
+            
+            # Calculate correlation stability (how much correlations are changing)
+            correlation_instability = 0
+            for corr_series in historical_correlations:
+                if hasattr(corr_series, 'rolling'):
+                    correlation_instability += corr_series.rolling(20).std().fillna(0)
+                else:
+                    correlation_instability += 0
+            
+            enhanced_features['correlation_instability'] = correlation_instability / len(historical_correlations)
+            
+        except Exception as e:
+            print(f"Warning: Could not fetch macro/intermarket data for {symbol}: {e}")
+            # Fill with market-typical values
+            macro_features = [
+                'sp500_correlation', 'sp500_beta', 'sp500_relative_strength',
+                'bond_correlation', 'yield_curve_slope', 'credit_spread_proxy', 
+                'credit_risk_correlation', 'dollar_correlation', 'commodity_correlation',
+                'inflation_hedge_factor', 'reit_correlation', 'risk_on_correlation',
+                'risk_appetite', 'macro_regime_score', 'global_growth_proxy',
+                'correlation_instability'
+            ]
+            
+            for feature in macro_features:
+                if 'correlation' in feature:
+                    if 'bond' in feature:
+                        enhanced_features[feature] = -0.2
+                    elif 'sp500' in feature:
+                        enhanced_features[feature] = 0.7
+                    else:
+                        enhanced_features[feature] = 0.3
+                elif 'beta' in feature:
+                    enhanced_features[feature] = 1.0
+                elif 'relative_strength' in feature:
+                    enhanced_features[feature] = 1.0
+                else:
+                    enhanced_features[feature] = 0
+        
+        return enhanced_features
+
+    def engineer_features(self, df: pd.DataFrame, market_data: Optional[Dict] = None, symbol: str = None) -> pd.DataFrame:
         """Main feature engineering pipeline"""
         
         try:
@@ -281,10 +1067,31 @@ class AdvancedFeatureEngineering:
         if market_data:
             features = self.create_intermarket_features(features, market_data)
         
+        # Add enhanced technical features
+        features = self.create_enhanced_technical_features(features)
+        features = self.create_microstructure_features(features)
+        features = self.create_advanced_momentum_features(features)
+        features = self.create_options_flow_features(features, df)
+        features = self.create_derivatives_features(features, df)
+        
+        # Add fundamental analysis features
+        if symbol:
+            features = self.create_fundamental_features(features, symbol)
+            # Add alternative data features
+            features = self.create_alternative_data_features(features, symbol)
+            # Add macro & intermarket analysis features
+            features = self.create_macro_intermarket_features(features, symbol)
+            # Add high-frequency microstructure features
+            features = self.create_high_frequency_microstructure_features(features)
+            # Add event-driven features
+            features = self.create_event_driven_features(features, symbol)
+            # Add sector & industry analysis features
+            features = self.create_sector_industry_features(features, symbol)
+        
         # Create lag features for time series
         feature_cols = [col for col in features.columns if col not in ['Open', 'High', 'Low', 'Close', 'Volume', 'Date']]
         
-        for col in feature_cols[:20]:  # Limit to prevent explosion
+        for col in feature_cols[:25]:  # Slightly increased for new features
             for lag in [1, 5]:
                 features[f'{col}_lag{lag}'] = features[col].shift(lag)
         
@@ -294,6 +1101,1320 @@ class AdvancedFeatureEngineering:
                             ['Open', 'High', 'Low', 'Close', 'Volume', 'Date', 'target']]
         
         return features
+
+    def create_high_frequency_microstructure_features(self, features: pd.DataFrame) -> pd.DataFrame:
+        """Create high-frequency microstructure features"""
+        enhanced_features = features.copy()
+        
+        try:
+            # Intraday price dynamics
+            # Price efficiency measures
+            enhanced_features['price_efficiency'] = (
+                (features['Close'] - features['Open']).abs() / 
+                (features['High'] - features['Low'] + 1e-8)
+            )
+            
+            # True range normalized by price
+            true_range = np.maximum(
+                features['High'] - features['Low'],
+                np.maximum(
+                    (features['High'] - features['Close'].shift(1)).abs(),
+                    (features['Low'] - features['Close'].shift(1)).abs()
+                )
+            )
+            enhanced_features['normalized_true_range'] = true_range / features['Close']
+            
+            # Intraday return patterns
+            overnight_return = (features['Open'] - features['Close'].shift(1)) / features['Close'].shift(1)
+            intraday_return = (features['Close'] - features['Open']) / features['Open']
+            
+            enhanced_features['overnight_return'] = overnight_return
+            enhanced_features['intraday_return'] = intraday_return
+            enhanced_features['overnight_intraday_ratio'] = overnight_return / (intraday_return + 1e-8)
+            
+            # Gap analysis
+            gap_up = np.where(features['Open'] > features['Close'].shift(1), 
+                            (features['Open'] - features['Close'].shift(1)) / features['Close'].shift(1), 0)
+            gap_down = np.where(features['Open'] < features['Close'].shift(1),
+                              (features['Close'].shift(1) - features['Open']) / features['Close'].shift(1), 0)
+            
+            enhanced_features['gap_up'] = gap_up
+            enhanced_features['gap_down'] = gap_down
+            enhanced_features['gap_magnitude'] = gap_up + gap_down
+            
+            # Volume microstructure
+            # Volume-weighted price measures
+            vwap_approx = (features['High'] + features['Low'] + features['Close']) / 3
+            enhanced_features['price_vs_vwap'] = (features['Close'] - vwap_approx) / vwap_approx
+            
+            # Volume distribution analysis  
+            enhanced_features['volume_concentration'] = (
+                features['Volume'] / features['Volume'].rolling(20).mean()
+            )
+            
+            # Order flow approximations
+            # Buying vs selling pressure (approximated)
+            enhanced_features['buying_pressure'] = np.where(
+                features['Close'] > features['Open'],
+                features['Volume'] * (features['Close'] - features['Open']) / (features['High'] - features['Low'] + 1e-8),
+                0
+            )
+            
+            enhanced_features['selling_pressure'] = np.where(
+                features['Close'] < features['Open'],
+                features['Volume'] * (features['Open'] - features['Close']) / (features['High'] - features['Low'] + 1e-8),
+                0
+            )
+            
+            enhanced_features['net_order_flow'] = (
+                enhanced_features['buying_pressure'] - enhanced_features['selling_pressure']
+            )
+            
+            # Volatility microstructure
+            # Intraday volatility patterns
+            intraday_volatility = (features['High'] - features['Low']) / features['Close']
+            enhanced_features['intraday_volatility'] = intraday_volatility
+            enhanced_features['volatility_ratio'] = (
+                intraday_volatility / intraday_volatility.rolling(20).mean()
+            )
+            
+            # Overnight vs intraday volatility
+            overnight_volatility = overnight_return.abs()
+            enhanced_features['overnight_volatility'] = overnight_volatility
+            enhanced_features['overnight_intraday_vol_ratio'] = (
+                overnight_volatility / (intraday_volatility + 1e-8)
+            )
+            
+            # Liquidity proxies
+            # Spread approximation (High-Low as proxy for bid-ask spread)
+            spread_proxy = (features['High'] - features['Low']) / features['Close']
+            enhanced_features['spread_proxy'] = spread_proxy
+            enhanced_features['relative_spread'] = (
+                spread_proxy / spread_proxy.rolling(20).mean()
+            )
+            
+            # Market impact measures
+            # How much does volume move price
+            volume_normalized = features['Volume'] / features['Volume'].rolling(20).mean()
+            price_change_normalized = features['Close'].pct_change().abs()
+            enhanced_features['volume_price_impact'] = (
+                price_change_normalized / (volume_normalized + 1e-8)
+            )
+            
+            # Amihud illiquidity measure approximation
+            daily_return = features['Close'].pct_change().abs()
+            dollar_volume = features['Volume'] * features['Close']
+            enhanced_features['amihud_illiquidity'] = (
+                daily_return / (dollar_volume / dollar_volume.rolling(20).mean() + 1e-8)
+            )
+            
+        except Exception as e:
+            print(f"Warning: Error creating microstructure features: {e}")
+            # Set default values for microstructure features
+            microstructure_features = [
+                'price_efficiency', 'normalized_true_range', 'overnight_return', 
+                'intraday_return', 'overnight_intraday_ratio', 'gap_up', 'gap_down',
+                'gap_magnitude', 'price_vs_vwap', 'volume_concentration',
+                'buying_pressure', 'selling_pressure', 'net_order_flow',
+                'intraday_volatility', 'volatility_ratio', 'overnight_volatility',
+                'overnight_intraday_vol_ratio', 'spread_proxy', 'relative_spread',
+                'volume_price_impact', 'amihud_illiquidity'
+            ]
+            
+            for feature in microstructure_features:
+                enhanced_features[feature] = 0
+        
+        return enhanced_features
+
+    def create_event_driven_features(self, features: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """Create event-driven features based on calendar events and market anomalies"""
+        enhanced_features = features.copy()
+        
+        try:
+            # Calendar-based event detection
+            dates = features.index
+            
+            # Earnings season detection (simplified - based on quarterly patterns)
+            # Typically earnings are announced in months 1,4,7,10 and 2,5,8,11
+            earnings_months = [1, 2, 4, 5, 7, 8, 10, 11]  # Peak earnings months
+            enhanced_features['earnings_season'] = np.where(
+                dates.month.isin(earnings_months), 1, 0
+            )
+            
+            # End of quarter effects (portfolio rebalancing, window dressing)
+            quarter_ends = [3, 6, 9, 12]  # March, June, Sept, Dec
+            enhanced_features['quarter_end'] = np.where(
+                (dates.month.isin(quarter_ends)) & (dates.day >= 25), 1, 0
+            )
+            
+            # Month-end effects (mutual fund flows, rebalancing)
+            enhanced_features['month_end'] = np.where(dates.day >= 25, 1, 0)
+            
+            # Week patterns (Monday effect, Friday effect)
+            enhanced_features['monday_effect'] = np.where(dates.dayofweek == 0, 1, 0)
+            enhanced_features['friday_effect'] = np.where(dates.dayofweek == 4, 1, 0)
+            
+            # Holiday effects - simplified using common US market holidays
+            # These would be more accurate with actual market calendar
+            enhanced_features['pre_holiday'] = 0  # Would need holiday calendar integration
+            enhanced_features['post_holiday'] = 0
+            
+            # Volume and volatility anomaly detection
+            # Unusual volume spikes (potential news/events)
+            volume_ma = features['Volume'].rolling(20).mean()
+            volume_std = features['Volume'].rolling(20).std()
+            enhanced_features['volume_spike'] = np.where(
+                features['Volume'] > volume_ma + 2 * volume_std, 1, 0
+            )
+            
+            # Unusual price moves (potential events)
+            returns = features['Close'].pct_change()
+            return_std = returns.rolling(20).std()
+            enhanced_features['price_spike_up'] = np.where(
+                returns > 2 * return_std, 1, 0
+            )
+            enhanced_features['price_spike_down'] = np.where(
+                returns < -2 * return_std, 1, 0
+            )
+            
+            # Gap events (potential overnight news)
+            gap_threshold = 0.02  # 2% gap threshold
+            overnight_gap = (features['Open'] - features['Close'].shift(1)) / features['Close'].shift(1)
+            enhanced_features['gap_up_event'] = np.where(overnight_gap > gap_threshold, 1, 0)
+            enhanced_features['gap_down_event'] = np.where(overnight_gap < -gap_threshold, 1, 0)
+            
+            # Earnings announcement approximation
+            # Look for patterns of high volume + price movement + gaps
+            earnings_proxy = (
+                enhanced_features['volume_spike'] + 
+                (enhanced_features['price_spike_up'] + enhanced_features['price_spike_down']) +
+                (enhanced_features['gap_up_event'] + enhanced_features['gap_down_event'])
+            )
+            enhanced_features['earnings_announcement_proxy'] = np.where(earnings_proxy >= 2, 1, 0)
+            
+            # Post-earnings drift detection
+            # Look for continued movement in same direction after earnings-like events
+            for days in [1, 2, 3, 5]:
+                post_earnings_return = features['Close'].pct_change(days).shift(-days)
+                earnings_return = returns * enhanced_features['earnings_announcement_proxy']
+                
+                # Same direction drift
+                enhanced_features[f'post_earnings_drift_{days}d'] = np.where(
+                    (earnings_return > 0) & (post_earnings_return > 0) |
+                    (earnings_return < 0) & (post_earnings_return < 0),
+                    1, 0
+                )
+            
+            # Default values for complex features that might fail
+            enhanced_features['sector_divergence'] = 0
+            enhanced_features['sector_momentum_divergence'] = 0
+            enhanced_features['volatility_regime_change'] = 0
+            enhanced_features['trend_reversal_down'] = 0
+            enhanced_features['trend_reversal_up'] = 0
+            enhanced_features['resistance_break'] = 0
+            enhanced_features['support_break'] = 0
+            enhanced_features['days_since_event'] = 15
+            enhanced_features['event_cluster'] = 0
+            
+        except Exception as e:
+            print(f"Warning: Error creating event-driven features for {symbol}: {e}")
+            # Set default values for event features
+            event_features = [
+                'earnings_season', 'quarter_end', 'month_end', 'monday_effect', 
+                'friday_effect', 'pre_holiday', 'post_holiday', 'volume_spike',
+                'price_spike_up', 'price_spike_down', 'gap_up_event', 'gap_down_event',
+                'earnings_announcement_proxy', 'sector_divergence', 'sector_momentum_divergence',
+                'volatility_regime_change', 'trend_reversal_down', 'trend_reversal_up',
+                'resistance_break', 'support_break', 'days_since_event', 'event_cluster'
+            ]
+            
+            for feature in event_features:
+                if 'days_since' in feature:
+                    enhanced_features[feature] = 15  # Average days
+                elif 'divergence' in feature:
+                    enhanced_features[feature] = 0
+                else:
+                    enhanced_features[feature] = 0
+            
+            # Add period-specific features
+            for days in [1, 2, 3, 5]:
+                enhanced_features[f'post_earnings_drift_{days}d'] = 0
+        
+        return enhanced_features
+
+    def create_sector_industry_features(self, features: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """Create sector and industry analysis features"""
+        enhanced_features = features.copy()
+        
+        try:
+            # Set default values for all features first
+            sector_features = [
+                'sector_relative_performance', 'sector_beta', 'sector_correlation',
+                'sector_momentum_divergence', 'sector_leadership', 'sector_weakness',
+                'size_factor', 'size_correlation', 'sector_rank', 'sector_rotation_momentum',
+                'sector_rotation_signal', 'sector_defensive', 'sector_cyclical',
+                'interest_rate_sensitivity', 'growth_stock', 'value_stock'
+            ]
+            
+            for feature in sector_features:
+                if 'correlation' in feature or 'beta' in feature:
+                    enhanced_features[feature] = 0.5
+                elif 'rank' in feature:
+                    enhanced_features[feature] = 0.5
+                elif 'defensive' in feature or 'cyclical' in feature or 'growth' in feature or 'value' in feature:
+                    enhanced_features[feature] = 0.5
+                else:
+                    enhanced_features[feature] = 0
+                    
+        except Exception as e:
+            print(f"Warning: Error creating sector/industry features for {symbol}: {e}")
+        
+        return enhanced_features
+
+# ============= MACHINE LEARNING ENHANCEMENTS =============
+
+class ResidualBlock(nn.Module):
+    """Residual block for deeper networks"""
+    def __init__(self, input_dim, hidden_dim, dropout=0.1):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, input_dim),
+            nn.BatchNorm1d(input_dim),
+            nn.Dropout(dropout)
+        )
+        self.activation = nn.GELU()
+        
+    def forward(self, x):
+        residual = x
+        out = self.layers(x)
+        out += residual  # Residual connection
+        return self.activation(out)
+
+class EnhancedTransformer(nn.Module):
+    """Enhanced Transformer with residual connections and attention visualization"""
+    
+    def __init__(self, input_dim, d_model=256, n_heads=16, n_layers=6, dropout=0.1):
+        super().__init__()
+        
+        # Enhanced input projection with residual
+        self.input_projection = nn.Sequential(
+            nn.Linear(input_dim, d_model),
+            nn.BatchNorm1d(d_model),
+            nn.GELU(),
+            nn.Dropout(dropout)
+        )
+        
+        # Enhanced positional encoding
+        self.positional_encoding = self._create_positional_encoding(2000, d_model)
+        
+        # Multi-scale transformer layers
+        self.transformer_layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=n_heads,
+                dim_feedforward=d_model * 4,
+                dropout=dropout,
+                activation='gelu',
+                batch_first=True
+            ) for _ in range(n_layers)
+        ])
+        
+        # Enhanced output with residual blocks
+        self.output_layers = nn.Sequential(
+            ResidualBlock(d_model, d_model // 2, dropout),
+            ResidualBlock(d_model, d_model // 2, dropout),
+            nn.Linear(d_model, d_model // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, d_model // 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 4, 3)  # 3 classes
+        )
+        
+        self.attention_weights = []  # For visualization
+        
+    def _create_positional_encoding(self, max_len, d_model):
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * 
+                           (-np.log(10000.0) / d_model))
+        
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        return pe
+    
+    def forward(self, x):
+        batch_size, seq_len, input_dim = x.size()
+        
+        # Process each timestep through input projection
+        x_reshaped = x.view(-1, input_dim)  # (batch*seq, input_dim)
+        x_projected = self.input_projection(x_reshaped)  # (batch*seq, d_model)
+        x = x_projected.view(batch_size, seq_len, -1)  # (batch, seq, d_model)
+        
+        # Add positional encoding
+        pos_encoding = self.positional_encoding[:seq_len, :].unsqueeze(0).to(x.device)
+        x = x + pos_encoding
+        
+        # Apply transformer layers with attention capture
+        self.attention_weights = []
+        for layer in self.transformer_layers:
+            x = layer(x)
+        
+        # Global attention pooling instead of just last timestep
+        attention_weights = torch.softmax(
+            torch.sum(x, dim=-1), dim=1
+        ).unsqueeze(-1)  # (batch, seq, 1)
+        
+        # Weighted sum across sequence
+        x = torch.sum(x * attention_weights, dim=1)  # (batch, d_model)
+        
+        # Output prediction
+        return self.output_layers(x)
+
+class ConvolutionalPredictor(nn.Module):
+    """1D CNN for pattern recognition in time series"""
+    
+    def __init__(self, input_dim, seq_len=60, dropout=0.1):
+        super().__init__()
+        
+        # Multi-scale convolutional features
+        self.conv1 = nn.Sequential(
+            nn.Conv1d(input_dim, 128, kernel_size=3, padding=1),
+            nn.BatchNorm1d(128),
+            nn.GELU(),
+            nn.Dropout(dropout)
+        )
+        
+        self.conv2 = nn.Sequential(
+            nn.Conv1d(128, 256, kernel_size=5, padding=2),
+            nn.BatchNorm1d(256),
+            nn.GELU(),
+            nn.MaxPool1d(2),
+            nn.Dropout(dropout)
+        )
+        
+        self.conv3 = nn.Sequential(
+            nn.Conv1d(256, 512, kernel_size=7, padding=3),
+            nn.BatchNorm1d(512),
+            nn.GELU(),
+            nn.MaxPool1d(2),
+            nn.Dropout(dropout)
+        )
+        
+        # Adaptive pooling to handle variable sequence lengths
+        self.adaptive_pool = nn.AdaptiveAvgPool1d(1)
+        
+        # Classification head
+        self.classifier = nn.Sequential(
+            nn.Linear(512, 256),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(256, 128),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 3)
+        )
+        
+    def forward(self, x):
+        # x shape: (batch, seq_len, features)
+        # CNN expects (batch, features, seq_len)
+        x = x.transpose(1, 2)  # (batch, features, seq_len)
+        
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.conv3(x)
+        
+        # Global average pooling
+        x = self.adaptive_pool(x)  # (batch, 512, 1)
+        x = x.squeeze(-1)  # (batch, 512)
+        
+        return self.classifier(x)
+
+class LSTMWithAttention(nn.Module):
+    """LSTM with attention mechanism"""
+    
+    def __init__(self, input_dim, hidden_dim=256, num_layers=3, dropout=0.1):
+        super().__init__()
+        
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        
+        # Bidirectional LSTM
+        self.lstm = nn.LSTM(
+            input_dim, hidden_dim, num_layers, 
+            batch_first=True, dropout=dropout, bidirectional=True
+        )
+        
+        # Attention mechanism
+        self.attention = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        
+        # Output layers
+        self.output = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, 3)
+        )
+    
+    def forward(self, x):
+        # LSTM forward pass
+        lstm_out, _ = self.lstm(x)  # (batch, seq, hidden_dim * 2)
+        
+        # Attention weights
+        attention_weights = self.attention(lstm_out)  # (batch, seq, 1)
+        attention_weights = torch.softmax(attention_weights, dim=1)
+        
+        # Weighted sum
+        context = torch.sum(lstm_out * attention_weights, dim=1)  # (batch, hidden_dim * 2)
+        
+        return self.output(context)
+
+
+# Advanced training techniques removed - using standard loss functions
+
+class ConfidenceCalibrator:
+    """Calibrates model confidence to match actual accuracy"""
+    
+    def __init__(self):
+        self.historical_predictions = []
+        self.calibration_curve = {}
+        self.is_calibrated = False
+        
+    def add_prediction_result(self, predicted_confidence: float, was_correct: bool, 
+                            market_condition: str = 'normal', volatility: float = 0.02):
+        """Add a prediction result for calibration"""
+        self.historical_predictions.append({
+            'confidence': predicted_confidence,
+            'correct': was_correct,
+            'market_condition': market_condition,
+            'volatility': volatility
+        })
+    
+    def calibrate_confidence(self):
+        """Build confidence calibration curve from historical data"""
+        if len(self.historical_predictions) < 50:
+            print("Warning: Insufficient data for confidence calibration")
+            return
+        
+        # Group predictions by confidence buckets
+        confidence_buckets = {
+            0.6: [], 0.7: [], 0.8: [], 0.9: [], 0.95: [], 0.99: []
+        }
+        
+        for pred in self.historical_predictions:
+            conf = pred['confidence']
+            # Assign to nearest bucket
+            bucket = min(confidence_buckets.keys(), key=lambda x: abs(x - conf))
+            confidence_buckets[bucket].append(pred)
+        
+        # Calculate actual accuracy for each bucket
+        self.calibration_curve = {}
+        for bucket_conf, predictions in confidence_buckets.items():
+            if predictions:
+                actual_accuracy = sum(p['correct'] for p in predictions) / len(predictions)
+                
+                # Adjust for market conditions
+                normal_preds = [p for p in predictions if p['market_condition'] == 'normal']
+                stress_preds = [p for p in predictions if p['market_condition'] in ['crash', 'correction']]
+                
+                normal_acc = sum(p['correct'] for p in normal_preds) / len(normal_preds) if normal_preds else actual_accuracy
+                stress_acc = sum(p['correct'] for p in stress_preds) / len(stress_preds) if stress_preds else actual_accuracy
+                
+                self.calibration_curve[bucket_conf] = {
+                    'actual_accuracy': actual_accuracy,
+                    'normal_accuracy': normal_acc,
+                    'stress_accuracy': stress_acc,
+                    'sample_count': len(predictions)
+                }
+        
+        self.is_calibrated = True
+        print(f"Confidence calibration completed with {len(self.historical_predictions)} samples")
+    
+    def calibrate_prediction_confidence(self, raw_confidence: float, 
+                                      market_condition: str = 'normal',
+                                      volatility: float = 0.02) -> float:
+        """Calibrate raw model confidence to actual expected accuracy"""
+        if not self.is_calibrated:
+            # Use conservative calibration without historical data
+            return self._conservative_calibration(raw_confidence, market_condition, volatility)
+        
+        # Find nearest calibration bucket
+        bucket = min(self.calibration_curve.keys(), key=lambda x: abs(x - raw_confidence))
+        calibration_data = self.calibration_curve[bucket]
+        
+        # Use appropriate accuracy based on market condition
+        if market_condition in ['crash', 'correction', 'stress']:
+            expected_accuracy = calibration_data['stress_accuracy']
+        else:
+            expected_accuracy = calibration_data['normal_accuracy']
+        
+        # Apply volatility adjustment
+        vol_penalty = min(0.1, (volatility - 0.02) * 2)  # Reduce confidence in high vol
+        calibrated_confidence = max(0.5, expected_accuracy - vol_penalty)
+        
+        return calibrated_confidence
+    
+    def _conservative_calibration(self, raw_confidence: float, 
+                                market_condition: str, volatility: float) -> float:
+        """Conservative calibration when no historical data available"""
+        # More reasonable calibration - still conservative but tradeable
+        if raw_confidence > 0.95:
+            base_conf = 0.75  # Still discount but not as heavily
+        elif raw_confidence > 0.9:
+            base_conf = 0.70
+        elif raw_confidence > 0.8:
+            base_conf = 0.65
+        else:
+            base_conf = raw_confidence * 0.9  # Smaller discount
+        
+        # Moderate reduction during stress (not as severe)
+        if market_condition in ['crash', 'correction', 'stress']:
+            base_conf *= 0.85  # Less severe penalty
+        
+        # Smaller volatility penalty
+        vol_penalty = min(0.05, volatility * 2)
+        return max(0.55, base_conf - vol_penalty)
+
+class MarketRegimeDetector:
+    """Detects current market regime for adaptive predictions"""
+    
+    def __init__(self):
+        self.regime_history = []
+        
+    def detect_market_regime(self, spy_data: pd.DataFrame, vix_level: float = None) -> Dict:
+        """Detect current market regime"""
+        
+        if len(spy_data) < 20:
+            return {'regime': 'unknown', 'confidence': 0.5, 'volatility': 0.02}
+        
+        # Calculate recent performance metrics
+        recent_returns = spy_data['Close'].pct_change().tail(20)
+        recent_volatility = recent_returns.std()
+        recent_trend = recent_returns.mean()
+        
+        # VIX analysis if available
+        if vix_level is None:
+            vix_level = 20  # Default assumption
+        
+        # Regime classification
+        if vix_level > 35 and recent_volatility > 0.03:
+            regime = 'crisis'
+            regime_confidence = 0.9
+        elif vix_level > 25 and recent_trend < -0.001:
+            regime = 'correction'
+            regime_confidence = 0.8
+        elif recent_volatility > 0.025:
+            regime = 'volatile'
+            regime_confidence = 0.7
+        elif abs(recent_trend) < 0.0005:
+            regime = 'sideways'
+            regime_confidence = 0.7
+        elif recent_trend > 0.001:
+            regime = 'bull'
+            regime_confidence = 0.8
+        else:
+            regime = 'normal'
+            regime_confidence = 0.6
+        
+        regime_data = {
+            'regime': regime,
+            'confidence': regime_confidence,
+            'volatility': recent_volatility,
+            'trend': recent_trend,
+            'vix_level': vix_level
+        }
+        
+        self.regime_history.append(regime_data)
+        return regime_data
+
+    def create_high_frequency_microstructure_features(self, features: pd.DataFrame) -> pd.DataFrame:
+        """Create high-frequency microstructure features"""
+        enhanced_features = features.copy()
+        
+        try:
+            # Intraday price dynamics
+            # Price efficiency measures
+            enhanced_features['price_efficiency'] = (
+                (features['Close'] - features['Open']).abs() / 
+                (features['High'] - features['Low'] + 1e-8)
+            )
+            
+            # True range normalized by price
+            true_range = np.maximum(
+                features['High'] - features['Low'],
+                np.maximum(
+                    (features['High'] - features['Close'].shift(1)).abs(),
+                    (features['Low'] - features['Close'].shift(1)).abs()
+                )
+            )
+            enhanced_features['normalized_true_range'] = true_range / features['Close']
+            
+            # Intraday return patterns
+            overnight_return = (features['Open'] - features['Close'].shift(1)) / features['Close'].shift(1)
+            intraday_return = (features['Close'] - features['Open']) / features['Open']
+            
+            enhanced_features['overnight_return'] = overnight_return
+            enhanced_features['intraday_return'] = intraday_return
+            enhanced_features['overnight_intraday_ratio'] = overnight_return / (intraday_return + 1e-8)
+            
+            # Gap analysis
+            gap_up = np.where(features['Open'] > features['Close'].shift(1), 
+                            (features['Open'] - features['Close'].shift(1)) / features['Close'].shift(1), 0)
+            gap_down = np.where(features['Open'] < features['Close'].shift(1),
+                              (features['Close'].shift(1) - features['Open']) / features['Close'].shift(1), 0)
+            
+            enhanced_features['gap_up'] = gap_up
+            enhanced_features['gap_down'] = gap_down
+            enhanced_features['gap_magnitude'] = gap_up + gap_down
+            
+            # Volume microstructure
+            # Volume-weighted price measures
+            vwap_approx = (features['High'] + features['Low'] + features['Close']) / 3
+            enhanced_features['price_vs_vwap'] = (features['Close'] - vwap_approx) / vwap_approx
+            
+            # Volume distribution analysis  
+            enhanced_features['volume_concentration'] = (
+                features['Volume'] / features['Volume'].rolling(20).mean()
+            )
+            
+            # Order flow approximations
+            # Buying vs selling pressure (approximated)
+            enhanced_features['buying_pressure'] = np.where(
+                features['Close'] > features['Open'],
+                features['Volume'] * (features['Close'] - features['Open']) / (features['High'] - features['Low'] + 1e-8),
+                0
+            )
+            
+            enhanced_features['selling_pressure'] = np.where(
+                features['Close'] < features['Open'],
+                features['Volume'] * (features['Open'] - features['Close']) / (features['High'] - features['Low'] + 1e-8),
+                0
+            )
+            
+            enhanced_features['net_order_flow'] = (
+                enhanced_features['buying_pressure'] - enhanced_features['selling_pressure']
+            )
+            
+            # Volatility microstructure
+            # Intraday volatility patterns
+            intraday_volatility = (features['High'] - features['Low']) / features['Close']
+            enhanced_features['intraday_volatility'] = intraday_volatility
+            enhanced_features['volatility_ratio'] = (
+                intraday_volatility / intraday_volatility.rolling(20).mean()
+            )
+            
+            # Overnight vs intraday volatility
+            overnight_volatility = overnight_return.abs()
+            enhanced_features['overnight_volatility'] = overnight_volatility
+            enhanced_features['overnight_intraday_vol_ratio'] = (
+                overnight_volatility / (intraday_volatility + 1e-8)
+            )
+            
+            # Liquidity proxies
+            # Spread approximation (High-Low as proxy for bid-ask spread)
+            spread_proxy = (features['High'] - features['Low']) / features['Close']
+            enhanced_features['spread_proxy'] = spread_proxy
+            enhanced_features['relative_spread'] = (
+                spread_proxy / spread_proxy.rolling(20).mean()
+            )
+            
+            # Market impact measures
+            # How much does volume move price
+            volume_normalized = features['Volume'] / features['Volume'].rolling(20).mean()
+            price_change_normalized = features['Close'].pct_change().abs()
+            enhanced_features['volume_price_impact'] = (
+                price_change_normalized / (volume_normalized + 1e-8)
+            )
+            
+            # Amihud illiquidity measure approximation
+            daily_return = features['Close'].pct_change().abs()
+            dollar_volume = features['Volume'] * features['Close']
+            enhanced_features['amihud_illiquidity'] = (
+                daily_return / (dollar_volume / dollar_volume.rolling(20).mean() + 1e-8)
+            )
+            
+        except Exception as e:
+            print(f"Warning: Error creating microstructure features: {e}")
+            # Set default values for microstructure features
+            microstructure_features = [
+                'price_efficiency', 'normalized_true_range', 'overnight_return', 
+                'intraday_return', 'overnight_intraday_ratio', 'gap_up', 'gap_down',
+                'gap_magnitude', 'price_vs_vwap', 'volume_concentration',
+                'buying_pressure', 'selling_pressure', 'net_order_flow',
+                'intraday_volatility', 'volatility_ratio', 'overnight_volatility',
+                'overnight_intraday_vol_ratio', 'spread_proxy', 'relative_spread',
+                'volume_price_impact', 'amihud_illiquidity'
+            ]
+            
+            for feature in microstructure_features:
+                enhanced_features[feature] = 0
+        
+        return enhanced_features
+    
+    def create_event_driven_features(self, features: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """Create event-driven features based on calendar events and market anomalies"""
+        enhanced_features = features.copy()
+        
+        try:
+            # Calendar-based event detection
+            dates = features.index
+            
+            # Earnings season detection (simplified - based on quarterly patterns)
+            # Typically earnings are announced in months 1,4,7,10 and 2,5,8,11
+            earnings_months = [1, 2, 4, 5, 7, 8, 10, 11]  # Peak earnings months
+            enhanced_features['earnings_season'] = np.where(
+                dates.month.isin(earnings_months), 1, 0
+            )
+            
+            # End of quarter effects (portfolio rebalancing, window dressing)
+            quarter_ends = [3, 6, 9, 12]  # March, June, Sept, Dec
+            enhanced_features['quarter_end'] = np.where(
+                (dates.month.isin(quarter_ends)) & (dates.day >= 25), 1, 0
+            )
+            
+            # Month-end effects (mutual fund flows, rebalancing)
+            enhanced_features['month_end'] = np.where(dates.day >= 25, 1, 0)
+            
+            # Week patterns (Monday effect, Friday effect)
+            enhanced_features['monday_effect'] = np.where(dates.dayofweek == 0, 1, 0)
+            enhanced_features['friday_effect'] = np.where(dates.dayofweek == 4, 1, 0)
+            
+            # Holiday effects - simplified using common US market holidays
+            # These would be more accurate with actual market calendar
+            enhanced_features['pre_holiday'] = 0  # Would need holiday calendar integration
+            enhanced_features['post_holiday'] = 0
+            
+            # Volume and volatility anomaly detection
+            # Unusual volume spikes (potential news/events)
+            volume_ma = features['Volume'].rolling(20).mean()
+            volume_std = features['Volume'].rolling(20).std()
+            enhanced_features['volume_spike'] = np.where(
+                features['Volume'] > volume_ma + 2 * volume_std, 1, 0
+            )
+            
+            # Unusual price moves (potential events)
+            returns = features['Close'].pct_change()
+            return_std = returns.rolling(20).std()
+            enhanced_features['price_spike_up'] = np.where(
+                returns > 2 * return_std, 1, 0
+            )
+            enhanced_features['price_spike_down'] = np.where(
+                returns < -2 * return_std, 1, 0
+            )
+            
+            # Gap events (potential overnight news)
+            gap_threshold = 0.02  # 2% gap threshold
+            overnight_gap = (features['Open'] - features['Close'].shift(1)) / features['Close'].shift(1)
+            enhanced_features['gap_up_event'] = np.where(overnight_gap > gap_threshold, 1, 0)
+            enhanced_features['gap_down_event'] = np.where(overnight_gap < -gap_threshold, 1, 0)
+            
+            # Earnings announcement approximation
+            # Look for patterns of high volume + price movement + gaps
+            earnings_proxy = (
+                enhanced_features['volume_spike'] + 
+                (enhanced_features['price_spike_up'] + enhanced_features['price_spike_down']) +
+                (enhanced_features['gap_up_event'] + enhanced_features['gap_down_event'])
+            )
+            enhanced_features['earnings_announcement_proxy'] = np.where(earnings_proxy >= 2, 1, 0)
+            
+            # Post-earnings drift detection
+            # Look for continued movement in same direction after earnings-like events
+            for days in [1, 2, 3, 5]:
+                post_earnings_return = features['Close'].pct_change(days).shift(-days)
+                earnings_return = returns * enhanced_features['earnings_announcement_proxy']
+                
+                # Same direction drift
+                enhanced_features[f'post_earnings_drift_{days}d'] = np.where(
+                    (earnings_return > 0) & (post_earnings_return > 0) |
+                    (earnings_return < 0) & (post_earnings_return < 0),
+                    1, 0
+                )
+            
+            # Sector rotation events (simplified)
+            # Detect when stock moves differently from sector
+            try:
+                # Use sector ETF based on common mapping
+                sector_etf_map = {
+                    # Tech stocks
+                    'AAPL': 'XLK', 'MSFT': 'XLK', 'GOOGL': 'XLK', 'NVDA': 'XLK', 'META': 'XLK',
+                    'TSLA': 'XLK', 'NFLX': 'XLK', 'ADBE': 'XLK', 'CRM': 'XLK', 'ORCL': 'XLK',
+                    # Financial stocks  
+                    'JPM': 'XLF', 'BAC': 'XLF', 'WFC': 'XLF', 'GS': 'XLF', 'MS': 'XLF',
+                    # Healthcare stocks
+                    'JNJ': 'XLV', 'PFE': 'XLV', 'UNH': 'XLV', 'ABBV': 'XLV', 'MRK': 'XLV',
+                    # Energy stocks
+                    'XOM': 'XLE', 'CVX': 'XLE', 'COP': 'XLE', 'SLB': 'XLE',
+                    # Consumer stocks
+                    'AMZN': 'XLY', 'HD': 'XLY', 'MCD': 'XLY', 'NKE': 'XLY', 'SBUX': 'XLY'
+                }
+                
+                sector_etf = sector_etf_map.get(symbol, 'SPY')  # Default to SPY
+                
+                import yfinance as yf
+                start_date = features.index[0].strftime('%Y-%m-%d')
+                end_date = features.index[-1].strftime('%Y-%m-%d')
+                
+                sector_data = yf.download(sector_etf, start=start_date, end=end_date, progress=False)
+                if not sector_data.empty:
+                    if isinstance(sector_data.columns, pd.MultiIndex):
+                        sector_data.columns = sector_data.columns.get_level_values(0)
+                    
+                    if 'Close' in sector_data.columns:
+                        sector_aligned = sector_data['Close'].reindex(features.index, method='ffill')
+                        sector_returns = sector_aligned.pct_change()
+                        stock_returns = features['Close'].pct_change()
+                        
+                        # Relative performance divergence
+                        relative_performance = stock_returns - sector_returns
+                        enhanced_features['sector_divergence'] = np.where(
+                            relative_performance.abs() > relative_performance.rolling(20).std() * 2,
+                            1, 0
+                        )
+                        
+                        # Sector momentum vs stock momentum
+                        enhanced_features['sector_momentum_divergence'] = (
+                            stock_returns.rolling(5).mean() - sector_returns.rolling(5).mean()
+                        )
+                        
+            except:
+                enhanced_features['sector_divergence'] = 0
+                enhanced_features['sector_momentum_divergence'] = 0
+            
+            # Market regime change detection
+            # Detect shifts in volatility regime
+            volatility = returns.rolling(20).std()
+            vol_regime_change = (volatility / volatility.rolling(60).mean() - 1).abs()
+            enhanced_features['volatility_regime_change'] = np.where(
+                vol_regime_change > vol_regime_change.rolling(20).std() * 2, 1, 0
+            )
+            
+            # Trend reversal events
+            # Simple trend reversal detection using moving averages
+            ma_short = features['Close'].rolling(5).mean()
+            ma_long = features['Close'].rolling(20).mean()
+            
+            # Trend change from up to down
+            enhanced_features['trend_reversal_down'] = np.where(
+                (ma_short.shift(1) > ma_long.shift(1)) & (ma_short < ma_long), 1, 0
+            )
+            
+            # Trend change from down to up
+            enhanced_features['trend_reversal_up'] = np.where(
+                (ma_short.shift(1) < ma_long.shift(1)) & (ma_short > ma_long), 1, 0
+            )
+            
+            # Support/resistance break events
+            # Using rolling max/min as support/resistance levels
+            resistance_level = features['High'].rolling(20).max()
+            support_level = features['Low'].rolling(20).min()
+            
+            enhanced_features['resistance_break'] = np.where(
+                features['Close'] > resistance_level.shift(1), 1, 0
+            )
+            enhanced_features['support_break'] = np.where(
+                features['Close'] < support_level.shift(1), 1, 0
+            )
+            
+            # Event persistence (how long effects last)
+            # Track how many days since last major event
+            major_events = (
+                enhanced_features['earnings_announcement_proxy'] +
+                enhanced_features['volume_spike'] +
+                enhanced_features['gap_up_event'] +
+                enhanced_features['gap_down_event']
+            )
+            
+            days_since_event = 0
+            days_since_last_event = []
+            for event in major_events:
+                if event > 0:
+                    days_since_event = 0
+                else:
+                    days_since_event += 1
+                days_since_last_event.append(min(days_since_event, 30))  # Cap at 30 days
+            
+            enhanced_features['days_since_event'] = days_since_last_event
+            
+            # Event clustering (multiple events close together)
+            event_window = major_events.rolling(5).sum()  # Events in last 5 days
+            enhanced_features['event_cluster'] = np.where(event_window >= 2, 1, 0)
+            
+        except Exception as e:
+            print(f"Warning: Error creating event-driven features for {symbol}: {e}")
+            # Set default values for event features
+            event_features = [
+                'earnings_season', 'quarter_end', 'month_end', 'monday_effect', 
+                'friday_effect', 'pre_holiday', 'post_holiday', 'volume_spike',
+                'price_spike_up', 'price_spike_down', 'gap_up_event', 'gap_down_event',
+                'earnings_announcement_proxy', 'sector_divergence', 'sector_momentum_divergence',
+                'volatility_regime_change', 'trend_reversal_down', 'trend_reversal_up',
+                'resistance_break', 'support_break', 'days_since_event', 'event_cluster'
+            ]
+            
+            for feature in event_features:
+                if 'days_since' in feature:
+                    enhanced_features[feature] = 15  # Average days
+                elif 'divergence' in feature:
+                    enhanced_features[feature] = 0
+                else:
+                    enhanced_features[feature] = 0
+            
+            # Add period-specific features
+            for days in [1, 2, 3, 5]:
+                enhanced_features[f'post_earnings_drift_{days}d'] = 0
+        
+        return enhanced_features
+    
+    def create_sector_industry_features(self, features: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """Create sector and industry analysis features"""
+        enhanced_features = features.copy()
+        
+        try:
+            # Comprehensive sector/industry mapping
+            sector_industry_map = {
+                # TECHNOLOGY SECTOR
+                'AAPL': {'sector': 'XLK', 'industry': 'consumer_electronics', 'market_cap': 'mega'},
+                'MSFT': {'sector': 'XLK', 'industry': 'software', 'market_cap': 'mega'},
+                'GOOGL': {'sector': 'XLK', 'industry': 'internet', 'market_cap': 'mega'},
+                'AMZN': {'sector': 'XLY', 'industry': 'e_commerce', 'market_cap': 'mega'},  # Consumer Discretionary
+                'NVDA': {'sector': 'XLK', 'industry': 'semiconductors', 'market_cap': 'large'},
+                'META': {'sector': 'XLK', 'industry': 'social_media', 'market_cap': 'mega'},
+                'TSLA': {'sector': 'XLY', 'industry': 'ev_automotive', 'market_cap': 'large'},
+                'NFLX': {'sector': 'XLY', 'industry': 'streaming', 'market_cap': 'large'},
+                'ADBE': {'sector': 'XLK', 'industry': 'software', 'market_cap': 'large'},
+                'CRM': {'sector': 'XLK', 'industry': 'cloud_software', 'market_cap': 'large'},
+                'ORCL': {'sector': 'XLK', 'industry': 'enterprise_software', 'market_cap': 'large'},
+                'AMD': {'sector': 'XLK', 'industry': 'semiconductors', 'market_cap': 'large'},
+                'INTC': {'sector': 'XLK', 'industry': 'semiconductors', 'market_cap': 'large'},
+                
+                # FINANCIAL SECTOR
+                'JPM': {'sector': 'XLF', 'industry': 'money_center_banks', 'market_cap': 'mega'},
+                'BAC': {'sector': 'XLF', 'industry': 'money_center_banks', 'market_cap': 'large'},
+                'WFC': {'sector': 'XLF', 'industry': 'money_center_banks', 'market_cap': 'large'},
+                'GS': {'sector': 'XLF', 'industry': 'investment_banking', 'market_cap': 'large'},
+                'MS': {'sector': 'XLF', 'industry': 'investment_banking', 'market_cap': 'large'},
+                'V': {'sector': 'XLF', 'industry': 'payment_processors', 'market_cap': 'mega'},
+                'MA': {'sector': 'XLF', 'industry': 'payment_processors', 'market_cap': 'mega'},
+                
+                # HEALTHCARE SECTOR
+                'JNJ': {'sector': 'XLV', 'industry': 'pharmaceuticals', 'market_cap': 'mega'},
+                'PFE': {'sector': 'XLV', 'industry': 'pharmaceuticals', 'market_cap': 'large'},
+                'UNH': {'sector': 'XLV', 'industry': 'health_insurance', 'market_cap': 'mega'},
+                'ABBV': {'sector': 'XLV', 'industry': 'biotechnology', 'market_cap': 'large'},
+                'MRK': {'sector': 'XLV', 'industry': 'pharmaceuticals', 'market_cap': 'large'},
+                
+                # ENERGY SECTOR
+                'XOM': {'sector': 'XLE', 'industry': 'oil_gas_integrated', 'market_cap': 'mega'},
+                'CVX': {'sector': 'XLE', 'industry': 'oil_gas_integrated', 'market_cap': 'large'},
+                'COP': {'sector': 'XLE', 'industry': 'oil_gas_exploration', 'market_cap': 'large'},
+                'SLB': {'sector': 'XLE', 'industry': 'oil_services', 'market_cap': 'large'},
+                
+                # CONSUMER DISCRETIONARY
+                'HD': {'sector': 'XLY', 'industry': 'home_improvement', 'market_cap': 'large'},
+                'MCD': {'sector': 'XLY', 'industry': 'restaurants', 'market_cap': 'large'},
+                'NKE': {'sector': 'XLY', 'industry': 'apparel', 'market_cap': 'large'},
+                'SBUX': {'sector': 'XLY', 'industry': 'restaurants', 'market_cap': 'large'},
+                
+                # CONSUMER STAPLES
+                'PG': {'sector': 'XLP', 'industry': 'household_products', 'market_cap': 'large'},
+                'KO': {'sector': 'XLP', 'industry': 'beverages', 'market_cap': 'large'},
+                'WMT': {'sector': 'XLP', 'industry': 'discount_retail', 'market_cap': 'mega'},
+                
+                # INDUSTRIALS
+                'BA': {'sector': 'XLI', 'industry': 'aerospace', 'market_cap': 'large'},
+                'CAT': {'sector': 'XLI', 'industry': 'construction_machinery', 'market_cap': 'large'},
+                'GE': {'sector': 'XLI', 'industry': 'conglomerates', 'market_cap': 'large'},
+                
+                # UTILITIES
+                'NEE': {'sector': 'XLU', 'industry': 'electric_utilities', 'market_cap': 'large'},
+                
+                # REAL ESTATE (REITs)
+                'PLD': {'sector': 'XLRE', 'industry': 'industrial_reits', 'market_cap': 'large'},
+                
+                # MATERIALS
+                'LIN': {'sector': 'XLB', 'industry': 'specialty_chemicals', 'market_cap': 'large'},
+                
+                # COMMUNICATION SERVICES
+                'T': {'sector': 'XLC', 'industry': 'telecom', 'market_cap': 'large'},
+                'VZ': {'sector': 'XLC', 'industry': 'telecom', 'market_cap': 'large'}
+            }
+            
+            # Get stock's sector/industry info
+            stock_info = sector_industry_map.get(symbol, {
+                'sector': 'SPY', 'industry': 'diversified', 'market_cap': 'large'
+            })
+            
+            sector_etf = stock_info['sector']
+            industry_type = stock_info['industry']
+            market_cap_category = stock_info['market_cap']
+            
+            # Fetch sector and related data
+            start_date = features.index[0].strftime('%Y-%m-%d')
+            end_date = features.index[-1].strftime('%Y-%m-%d')
+            
+            import yfinance as yf
+            
+            # Sector analysis
+            sector_data = yf.download(sector_etf, start=start_date, end=end_date, progress=False)
+            if not sector_data.empty and isinstance(sector_data.columns, pd.MultiIndex):
+                sector_data.columns = sector_data.columns.get_level_values(0)
+            
+            if not sector_data.empty and 'Close' in sector_data.columns:
+                sector_aligned = sector_data['Close'].reindex(features.index, method='ffill')
+                sector_returns = sector_aligned.pct_change()
+                stock_returns = features['Close'].pct_change()
+                
+                # Sector relative performance
+                enhanced_features['sector_relative_performance'] = (
+                    stock_returns.rolling(20).mean() - sector_returns.rolling(20).mean()
+                )
+                
+                # Sector beta (rolling)
+                covariance = stock_returns.rolling(60).cov(sector_returns)
+                sector_variance = sector_returns.rolling(60).var()
+                enhanced_features['sector_beta'] = covariance / sector_variance
+                
+                # Sector correlation (rolling)
+                enhanced_features['sector_correlation'] = (
+                    stock_returns.rolling(60).corr(sector_returns)
+                )
+                
+                # Sector momentum divergence
+                stock_momentum = stock_returns.rolling(10).mean()
+                sector_momentum = sector_returns.rolling(10).mean()
+                enhanced_features['sector_momentum_divergence'] = stock_momentum - sector_momentum
+                
+                # Sector leadership indicator
+                enhanced_features['sector_leadership'] = np.where(
+                    enhanced_features['sector_relative_performance'] > 
+                    enhanced_features['sector_relative_performance'].rolling(20).quantile(0.8),
+                    1, 0
+                )
+                
+                # Sector weakness indicator
+                enhanced_features['sector_weakness'] = np.where(
+                    enhanced_features['sector_relative_performance'] < 
+                    enhanced_features['sector_relative_performance'].rolling(20).quantile(0.2),
+                    1, 0
+                )
+            
+            # Market cap category analysis
+            if market_cap_category == 'mega':
+                # Compare with large cap index
+                comparison_etf = 'IVV'  # iShares Core S&P 500
+            elif market_cap_category == 'large':
+                comparison_etf = 'IVV'  # iShares Core S&P 500
+            else:
+                comparison_etf = 'IWM'  # iShares Russell 2000 (small cap)
+            
+            try:
+                size_data = yf.download(comparison_etf, start=start_date, end=end_date, progress=False)
+                if not size_data.empty and isinstance(size_data.columns, pd.MultiIndex):
+                    size_data.columns = size_data.columns.get_level_values(0)
+                
+                if not size_data.empty and 'Close' in size_data.columns:
+                    size_aligned = size_data['Close'].reindex(features.index, method='ffill')
+                    size_returns = size_aligned.pct_change()
+                    
+                    # Size factor analysis
+                    enhanced_features['size_factor'] = (
+                        stock_returns.rolling(20).mean() - size_returns.rolling(20).mean()
+                    )
+                    
+                    # Size correlation
+                    enhanced_features['size_correlation'] = (
+                        stock_returns.rolling(60).corr(size_returns)
+                    )
+            except:
+                enhanced_features['size_factor'] = 0
+                enhanced_features['size_correlation'] = 0.7
+            
+            # Industry-specific analysis
+            industry_specific_features = self._create_industry_specific_features(
+                features, industry_type, symbol
+            )
+            enhanced_features = pd.concat([enhanced_features, industry_specific_features], axis=1)
+            
+            # Sector rotation analysis
+            # Compare performance across major sectors
+            major_sectors = ['XLK', 'XLF', 'XLE', 'XLV', 'XLI', 'XLY', 'XLP', 'XLU']
+            sector_performances = {}
+            
+            for sector in major_sectors[:4]:  # Limit to prevent too many API calls
+                try:
+                    sector_temp_data = yf.download(sector, start=start_date, end=end_date, progress=False)
+                    if not sector_temp_data.empty:
+                        if isinstance(sector_temp_data.columns, pd.MultiIndex):
+                            sector_temp_data.columns = sector_temp_data.columns.get_level_values(0)
+                        
+                        if 'Close' in sector_temp_data.columns:
+                            sector_temp_aligned = sector_temp_data['Close'].reindex(features.index, method='ffill')
+                            sector_temp_returns = sector_temp_aligned.pct_change(20)  # 20-day returns
+                            sector_performances[sector] = sector_temp_returns.iloc[-1] if len(sector_temp_returns) > 0 else 0
+                except:
+                    sector_performances[sector] = 0
+            
+            # Current sector rank
+            if sector_performances:
+                current_sector_performance = sector_performances.get(sector_etf, 0)
+                all_performances = list(sector_performances.values())
+                if all_performances:
+                    sector_rank = sum(1 for p in all_performances if p < current_sector_performance) / len(all_performances)
+                    enhanced_features['sector_rank'] = sector_rank
+                else:
+                    enhanced_features['sector_rank'] = 0.5
+            else:
+                enhanced_features['sector_rank'] = 0.5
+            
+            # Rotation momentum (is sector gaining or losing relative strength)
+            if 'sector_relative_performance' in enhanced_features.columns:
+                sector_rotation_momentum = enhanced_features['sector_relative_performance'].diff(5)
+                enhanced_features['sector_rotation_momentum'] = sector_rotation_momentum
+                
+                # Sector rotation signal
+                enhanced_features['sector_rotation_signal'] = np.where(
+                    sector_rotation_momentum > sector_rotation_momentum.rolling(20).quantile(0.7),
+                    1,  # Rotating into sector
+                    np.where(
+                        sector_rotation_momentum < sector_rotation_momentum.rolling(20).quantile(0.3),
+                        -1,  # Rotating out of sector
+                        0    # Neutral
+                    )
+                )
+            
+            # Defensive vs cyclical classification
+            defensive_sectors = ['XLP', 'XLU', 'XLV']  # Staples, Utilities, Healthcare
+            cyclical_sectors = ['XLY', 'XLF', 'XLI', 'XLE']  # Discretionary, Financials, Industrials, Energy
+            
+            if sector_etf in defensive_sectors:
+                enhanced_features['sector_defensive'] = 1
+                enhanced_features['sector_cyclical'] = 0
+            elif sector_etf in cyclical_sectors:
+                enhanced_features['sector_defensive'] = 0
+                enhanced_features['sector_cyclical'] = 1
+            else:
+                enhanced_features['sector_defensive'] = 0.5
+                enhanced_features['sector_cyclical'] = 0.5
+            
+            # Economic sensitivity analysis
+            # Correlation with economic indicators (using sector as proxy)
+            try:
+                # Use treasury yields as economic indicator proxy
+                tlt_data = yf.download('TLT', start=start_date, end=end_date, progress=False)
+                if not tlt_data.empty:
+                    if isinstance(tlt_data.columns, pd.MultiIndex):
+                        tlt_data.columns = tlt_data.columns.get_level_values(0)
+                    
+                    if 'Close' in tlt_data.columns:
+                        tlt_aligned = tlt_data['Close'].reindex(features.index, method='ffill')
+                        tlt_returns = tlt_aligned.pct_change()
+                        
+                        # Interest rate sensitivity
+                        enhanced_features['interest_rate_sensitivity'] = (
+                            stock_returns.rolling(60).corr(tlt_returns)
+                        )
+            except:
+                enhanced_features['interest_rate_sensitivity'] = 0
+            
+            # Value vs Growth classification (simplified)
+            # Based on sector tendencies
+            growth_sectors = ['XLK', 'XLY']  # Technology, Consumer Discretionary
+            value_sectors = ['XLF', 'XLE', 'XLB']  # Financials, Energy, Materials
+            
+            if sector_etf in growth_sectors:
+                enhanced_features['growth_stock'] = 1
+                enhanced_features['value_stock'] = 0
+            elif sector_etf in value_sectors:
+                enhanced_features['growth_stock'] = 0
+                enhanced_features['value_stock'] = 1
+            else:
+                enhanced_features['growth_stock'] = 0.5
+                enhanced_features['value_stock'] = 0.5
+                
+        except Exception as e:
+            print(f"Warning: Error creating sector/industry features for {symbol}: {e}")
+            # Set default values
+            sector_features = [
+                'sector_relative_performance', 'sector_beta', 'sector_correlation',
+                'sector_momentum_divergence', 'sector_leadership', 'sector_weakness',
+                'size_factor', 'size_correlation', 'sector_rank', 'sector_rotation_momentum',
+                'sector_rotation_signal', 'sector_defensive', 'sector_cyclical',
+                'interest_rate_sensitivity', 'growth_stock', 'value_stock'
+            ]
+            
+            for feature in sector_features:
+                if 'correlation' in feature or 'beta' in feature:
+                    enhanced_features[feature] = 0.5
+                elif 'rank' in feature:
+                    enhanced_features[feature] = 0.5
+                elif 'defensive' in feature or 'cyclical' in feature or 'growth' in feature or 'value' in feature:
+                    enhanced_features[feature] = 0.5
+                else:
+                    enhanced_features[feature] = 0
+        
+        return enhanced_features
+    
+    def _create_industry_specific_features(self, features: pd.DataFrame, industry_type: str, symbol: str) -> pd.DataFrame:
+        """Create industry-specific features"""
+        industry_features = pd.DataFrame(index=features.index)
+        
+        try:
+            # Technology industry features
+            if 'software' in industry_type or 'internet' in industry_type or 'semiconductors' in industry_type:
+                # Tech stocks are sensitive to NASDAQ
+                industry_features['tech_nasdaq_correlation'] = 0.8  # Default high correlation
+                industry_features['innovation_cycle'] = np.sin(np.arange(len(features)) * 2 * np.pi / 252)  # Annual cycle
+                industry_features['growth_multiple_sensitivity'] = 1  # High growth multiple sensitivity
+                
+            # Financial industry features
+            elif 'bank' in industry_type or 'investment' in industry_type or 'payment' in industry_type:
+                # Banks are sensitive to interest rates and credit conditions
+                industry_features['interest_rate_exposure'] = 1
+                industry_features['credit_cycle_sensitivity'] = 1
+                industry_features['regulatory_sensitivity'] = 1
+                
+            # Healthcare industry features
+            elif 'pharmaceutical' in industry_type or 'biotechnology' in industry_type or 'health' in industry_type:
+                industry_features['regulatory_risk'] = 1
+                industry_features['patent_cliff_risk'] = 0.5
+                industry_features['demographic_tailwind'] = 1  # Aging population
+                
+            # Energy industry features
+            elif 'oil' in industry_type or 'gas' in industry_type or 'energy' in industry_type:
+                industry_features['commodity_correlation'] = 0.8
+                industry_features['geopolitical_sensitivity'] = 1
+                industry_features['cyclical_sensitivity'] = 1
+                
+            # Consumer discretionary features
+            elif 'retail' in industry_type or 'restaurant' in industry_type or 'apparel' in industry_type:
+                industry_features['consumer_confidence_sensitivity'] = 1
+                industry_features['economic_cycle_sensitivity'] = 1  
+                industry_features['seasonal_patterns'] = np.sin(np.arange(len(features)) * 2 * np.pi / 252 * 4)  # Quarterly
+                
+            # Default features for other industries
+            else:
+                industry_features['industry_beta'] = 1.0
+                industry_features['sector_specific_risk'] = 0.5
+                
+        except Exception as e:
+            print(f"Warning: Error creating industry-specific features for {industry_type}: {e}")
+            # Default neutral values
+            industry_features['industry_neutral'] = 0.5
+        
+        return industry_features
+
 
 class TransformerPredictor(nn.Module):
     """Transformer architecture adapted for stock prediction"""
@@ -504,117 +2625,169 @@ class StockDataset(Dataset):
         
         return torch.FloatTensor(X), torch.LongTensor([y])
 
-class SentimentAnalyzer:
-    """Analyzes sentiment from multiple sources"""
+
+class RiskManager:
+    """Comprehensive risk management system"""
     
-    def __init__(self):
-        try:
-            self.finbert = pipeline("sentiment-analysis", 
-                                  model="ProsusAI/finbert",
-                                  device=0 if torch.cuda.is_available() else -1)
-        except:
-            print("FinBERT not available, using VADER")
-            self.finbert = None
-            self.vader = SentimentIntensityAnalyzer()
+    def __init__(self, initial_capital: float = 10000):
+        self.initial_capital = initial_capital
+        self.current_capital = initial_capital
+        self.positions = {}
+        self.daily_returns = []
+        self.max_position_size = 0.05  # 5% max per position
+        self.max_sector_exposure = 0.25  # 25% max per sector
+        self.max_daily_loss = 0.02  # 2% max daily loss
+        self.max_drawdown_limit = 0.15  # 15% max drawdown before stopping
+        self.volatility_lookback = 20
+        self.risk_free_rate = 0.05  # 5% risk-free rate
+        
+        # Stop-loss and take-profit levels
+        self.default_stop_loss = 0.08  # 8% stop loss
+        self.default_take_profit = 0.15  # 15% take profit
+        
+        # Sector classifications
+        self.sector_map = {
+            'AAPL': 'tech', 'MSFT': 'tech', 'GOOGL': 'tech', 'AMZN': 'tech', 'META': 'tech',
+            'TSLA': 'auto', 'F': 'auto', 'GM': 'auto',
+            'JPM': 'finance', 'BAC': 'finance', 'WFC': 'finance', 'GS': 'finance',
+            'JNJ': 'healthcare', 'PFE': 'healthcare', 'ABBV': 'healthcare',
+            'XOM': 'energy', 'CVX': 'energy', 'COP': 'energy'
+        }
     
-    def get_news_sentiment(self, symbol: str, days_back: int = 7) -> Dict:
-        """Scrape and analyze news sentiment"""
-        # Create data directory if it doesn't exist
-        os.makedirs('data/sentiment', exist_ok=True)
+    def calculate_position_size(self, symbol: str, prediction_confidence: float, 
+                              current_price: float, volatility: float) -> Dict:
+        """Calculate optimal position size based on risk metrics"""
         
-        # Check if sentiment data exists
-        sentiment_file = f"data/sentiment/{symbol}_sentiment_{datetime.now().strftime('%Y-%m-%d')}.json"
+        # Base position size from confidence
+        base_size = self.max_position_size * prediction_confidence
         
-        if os.path.exists(sentiment_file):
-            try:
-                with open(sentiment_file, 'r') as f:
-                    sentiment_data = json.load(f)
-                print(f"Loaded sentiment data for {symbol} from cache")
-                return sentiment_data
-            except Exception as e:
-                print(f"Error loading cached sentiment for {symbol}: {e}")
+        # Adjust for volatility (Kelly Criterion inspired)
+        vol_adjustment = min(1.0, 0.02 / (volatility + 0.001))
         
-        sentiments = []
-        headlines_data = []
+        # Adjust for current portfolio heat
+        portfolio_heat = self._calculate_portfolio_heat()
+        heat_adjustment = max(0.1, 1.0 - portfolio_heat)
         
-        # Multiple news sources
-        sources = [
-            f"https://finviz.com/quote.ashx?t={symbol}",
-            f"https://finance.yahoo.com/quote/{symbol}/news"
-        ]
+        # Sector concentration limits
+        sector = self.sector_map.get(symbol, 'other')
+        sector_exposure = self._calculate_sector_exposure(sector)
+        sector_adjustment = max(0.1, (self.max_sector_exposure - sector_exposure) / self.max_sector_exposure)
         
-        for source in sources:
-            try:
-                response = requests.get(source, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                })
-                
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.content, 'html.parser')
-                    
-                    # Extract news headlines (simplified)
-                    headlines = []
-                    for tag in ['h3', 'h4', 'a']:
-                        for element in soup.find_all(tag)[:20]:
-                            text = element.get_text().strip()
-                            if len(text) > 20 and len(text) < 200:
-                                headlines.append(text)
-                    
-                    # Analyze sentiment
-                    for headline in headlines:
-                        sentiment = self._analyze_text(headline)
-                        sentiments.append(sentiment)
-                        headlines_data.append({
-                            'text': headline,
-                            'sentiment': sentiment,
-                            'source': source,
-                            'timestamp': datetime.now().isoformat()
-                        })
-            except:
-                continue
+        # Final position size
+        adjusted_size = base_size * vol_adjustment * heat_adjustment * sector_adjustment
+        adjusted_size = max(0.005, min(self.max_position_size, adjusted_size))  # Min 0.5%, max 5%
         
-        if sentiments:
-            result = {
-                'mean_sentiment': np.mean(sentiments),
-                'sentiment_std': np.std(sentiments),
-                'positive_ratio': sum(1 for s in sentiments if s > 0.1) / len(sentiments),
-                'negative_ratio': sum(1 for s in sentiments if s < -0.1) / len(sentiments),
-                'num_articles': len(sentiments),
-                'headlines': headlines_data
-            }
-        else:
-            result = {
-                'mean_sentiment': 0,
-                'sentiment_std': 0,
-                'positive_ratio': 0.5,
-                'negative_ratio': 0.5,
-                'num_articles': 0,
-                'headlines': []
-            }
+        # Calculate number of shares
+        position_value = self.current_capital * adjusted_size
+        shares = int(position_value / current_price)
         
-        # Save sentiment data
-        try:
-            with open(sentiment_file, 'w') as f:
-                json.dump(result, f, indent=2)
-            print(f"Saved sentiment data for {symbol} to {sentiment_file}")
-        except Exception as e:
-            print(f"Error saving sentiment data: {e}")
-        
-        return result
+        return {
+            'position_size_pct': adjusted_size,
+            'position_value': position_value,
+            'shares': shares,
+            'base_size': base_size,
+            'vol_adjustment': vol_adjustment,
+            'heat_adjustment': heat_adjustment,
+            'sector_adjustment': sector_adjustment,
+            'sector': sector
+        }
     
-    def _analyze_text(self, text: str) -> float:
-        """Analyze sentiment of text"""
-        if self.finbert:
-            result = self.finbert(text[:512])[0]
-            if result['label'] == 'positive':
-                return result['score']
-            elif result['label'] == 'negative':
-                return -result['score']
-            else:
-                return 0
-        else:
-            scores = self.vader.polarity_scores(text)
-            return scores['compound']
+    def calculate_stop_levels(self, symbol: str, entry_price: float, 
+                             prediction: str, volatility: float) -> Dict:
+        """Calculate dynamic stop-loss and take-profit levels"""
+        
+        # Volatility-adjusted stops
+        vol_multiplier = max(1.0, volatility * 50)  # Scale volatility
+        
+        if prediction == 'up':
+            stop_loss = entry_price * (1 - self.default_stop_loss * vol_multiplier)
+            take_profit = entry_price * (1 + self.default_take_profit * vol_multiplier)
+        else:  # 'down' - short position
+            stop_loss = entry_price * (1 + self.default_stop_loss * vol_multiplier)
+            take_profit = entry_price * (1 - self.default_take_profit * vol_multiplier)
+        
+        return {
+            'stop_loss': stop_loss,
+            'take_profit': take_profit,
+            'vol_multiplier': vol_multiplier,
+            'risk_reward_ratio': self.default_take_profit / self.default_stop_loss
+        }
+    
+    def check_risk_limits(self, new_trade: Dict) -> Dict:
+        """Check if new trade violates risk limits"""
+        checks = {
+            'passed': True,
+            'violations': [],
+            'warnings': []
+        }
+        
+        # Position size check
+        if new_trade['position_size_pct'] > self.max_position_size:
+            checks['passed'] = False
+            checks['violations'].append(f"Position size {new_trade['position_size_pct']:.1%} exceeds limit {self.max_position_size:.1%}")
+        
+        # Sector concentration check
+        sector = new_trade.get('sector', 'other')
+        current_sector_exposure = self._calculate_sector_exposure(sector)
+        if current_sector_exposure + new_trade['position_size_pct'] > self.max_sector_exposure:
+            checks['passed'] = False
+            checks['violations'].append(f"Sector exposure would exceed {self.max_sector_exposure:.1%}")
+        
+        # Portfolio heat check
+        portfolio_heat = self._calculate_portfolio_heat()
+        if portfolio_heat > 0.8:  # 80% of capital at risk
+            checks['warnings'].append(f"High portfolio heat: {portfolio_heat:.1%}")
+        
+        # Drawdown check
+        current_drawdown = self._calculate_current_drawdown()
+        if current_drawdown < -self.max_drawdown_limit:
+            checks['passed'] = False
+            checks['violations'].append(f"Drawdown {current_drawdown:.1%} exceeds limit {self.max_drawdown_limit:.1%}")
+        
+        return checks
+    
+    def _calculate_portfolio_heat(self) -> float:
+        """Calculate percentage of capital currently at risk"""
+        total_risk = sum(
+            abs(pos['shares'] * pos['entry_price']) 
+            for pos in self.positions.values()
+        )
+        return total_risk / self.current_capital if self.current_capital > 0 else 0
+    
+    def _calculate_sector_exposure(self, sector: str) -> float:
+        """Calculate current exposure to a specific sector"""
+        sector_value = sum(
+            abs(pos['shares'] * pos['entry_price']) 
+            for symbol, pos in self.positions.items()
+            if self.sector_map.get(symbol, 'other') == sector
+        )
+        return sector_value / self.current_capital if self.current_capital > 0 else 0
+    
+    def _calculate_current_drawdown(self) -> float:
+        """Calculate current drawdown from peak capital"""
+        if not hasattr(self, 'peak_capital'):
+            self.peak_capital = self.initial_capital
+        
+        self.peak_capital = max(self.peak_capital, self.current_capital)
+        return (self.current_capital - self.peak_capital) / self.peak_capital
+    
+    def get_portfolio_summary(self) -> Dict:
+        """Get comprehensive portfolio risk summary"""
+        return {
+            'current_capital': self.current_capital,
+            'total_return': (self.current_capital - self.initial_capital) / self.initial_capital,
+            'positions_count': len(self.positions),
+            'portfolio_heat': self._calculate_portfolio_heat(),
+            'current_drawdown': self._calculate_current_drawdown(),
+            'sector_exposures': {
+                sector: self._calculate_sector_exposure(sector) 
+                for sector in set(self.sector_map.values())
+            },
+            'unrealized_pnl': sum(pos['unrealized_pnl'] for pos in self.positions.values()),
+            'average_daily_return': np.mean(self.daily_returns) if self.daily_returns else 0,
+            'daily_volatility': np.std(self.daily_returns) if len(self.daily_returns) > 1 else 0
+        }
+
 
 class AdvancedStockPredictor:
     """Main prediction system combining all components"""
@@ -622,7 +2795,6 @@ class AdvancedStockPredictor:
     def __init__(self, device='cuda' if torch.cuda.is_available() else 'cpu'):
         self.device = device
         self.feature_engineer = AdvancedFeatureEngineering()
-        self.sentiment_analyzer = SentimentAnalyzer()
         self.models = {}
         self.scalers = {}
         self.performance_history = []
@@ -735,7 +2907,7 @@ class AdvancedStockPredictor:
                     continue
                 
                 # Engineer features
-                features_df = self.feature_engineer.engineer_features(df, market_indices)
+                features_df = self.feature_engineer.engineer_features(df, market_indices, symbol)
                 
                 # Add sentiment features (simplified for speed)
                 sentiment = {'mean_sentiment': 0, 'sentiment_std': 0, 
@@ -992,7 +3164,7 @@ class AdvancedStockPredictor:
                                        start_date.strftime('%Y-%m-%d'),
                                        end_date.strftime('%Y-%m-%d'))
         
-        features_df = self.feature_engineer.engineer_features(df, market_indices)
+        features_df = self.feature_engineer.engineer_features(df, market_indices, symbol)
         
         # Get enhanced sentiment for MultiModal model
         sentiment = self._get_enhanced_sentiment(symbol, df)
@@ -2024,8 +4196,12 @@ if __name__ == "__main__":
     # Initialize predictor
     predictor = AdvancedStockPredictor()
     
-    # Define symbols to analyze
-    symbols = ['AAPL', 'GOOGL', 'MSFT', 'AMZN', 'TSLA', 'META', 'NVDA', 'AMD', 'SPY', 'QQQ']
+    # Import all tickers from top_200_tickers
+    from top_200_tickers import ALL_TICKERS
+    
+    # Use all 188 stocks for comprehensive training
+    symbols = ALL_TICKERS
+    print(f"Training on {len(symbols)} stocks: {symbols[:10]}...{symbols[-5:]}")  # Show first 10 and last 5
     
     # Fetch historical data
     end_date = datetime.now().strftime('%Y-%m-%d')
@@ -2040,9 +4216,10 @@ if __name__ == "__main__":
     # Train ensemble
     predictor.train_ensemble(train_data)
     
-    # Make prediction for a symbol
-    print("\nMaking prediction for AAPL...")
-    prediction = predictor.predict('AAPL')
+    # Make prediction for a sample symbol (first stock in the list)
+    sample_symbol = symbols[0]
+    print(f"\nMaking prediction for {sample_symbol}...")
+    prediction = predictor.predict(sample_symbol)
     
     print(f"\nPrediction Results:")
     print(f"Symbol: {prediction['symbol']}")
@@ -2076,320 +4253,4 @@ if __name__ == "__main__":
     # real_time = RealTimePredictor('advanced_stock_predictor.pth')
     # real_time.monitor_symbols(['AAPL', 'GOOGL', 'TSLA'], interval=300)
 
-class RiskManager:
-    """Comprehensive risk management system"""
-    
-    def __init__(self, initial_capital: float = 10000):
-        self.initial_capital = initial_capital
-        self.current_capital = initial_capital
-        self.positions = {}
-        self.daily_returns = []
-        self.max_position_size = 0.05  # 5% max per position
-        self.max_sector_exposure = 0.25  # 25% max per sector
-        self.max_daily_loss = 0.02  # 2% max daily loss
-        self.max_drawdown_limit = 0.15  # 15% max drawdown before stopping
-        self.volatility_lookback = 20
-        self.risk_free_rate = 0.05  # 5% risk-free rate
-        
-        # Stop-loss and take-profit levels
-        self.default_stop_loss = 0.08  # 8% stop loss
-        self.default_take_profit = 0.15  # 15% take profit
-        
-        # Sector classifications
-        self.sector_map = {
-            'AAPL': 'tech', 'MSFT': 'tech', 'GOOGL': 'tech', 'AMZN': 'tech', 'META': 'tech',
-            'TSLA': 'auto', 'F': 'auto', 'GM': 'auto',
-            'JPM': 'finance', 'BAC': 'finance', 'WFC': 'finance', 'GS': 'finance',
-            'JNJ': 'healthcare', 'PFE': 'healthcare', 'ABBV': 'healthcare',
-            'XOM': 'energy', 'CVX': 'energy', 'COP': 'energy'
-        }
-    
-    def calculate_position_size(self, symbol: str, prediction_confidence: float, 
-                              current_price: float, volatility: float) -> Dict:
-        """Calculate optimal position size based on risk metrics"""
-        
-        # Base position size from confidence
-        base_size = self.max_position_size * prediction_confidence
-        
-        # Adjust for volatility (Kelly Criterion inspired)
-        vol_adjustment = min(1.0, 0.02 / (volatility + 0.001))
-        
-        # Adjust for current portfolio heat
-        portfolio_heat = self._calculate_portfolio_heat()
-        heat_adjustment = max(0.1, 1.0 - portfolio_heat)
-        
-        # Sector concentration limits
-        sector = self.sector_map.get(symbol, 'other')
-        sector_exposure = self._calculate_sector_exposure(sector)
-        sector_adjustment = max(0.1, (self.max_sector_exposure - sector_exposure) / self.max_sector_exposure)
-        
-        # Final position size
-        adjusted_size = base_size * vol_adjustment * heat_adjustment * sector_adjustment
-        adjusted_size = max(0.005, min(self.max_position_size, adjusted_size))  # Min 0.5%, max 5%
-        
-        # Calculate number of shares
-        position_value = self.current_capital * adjusted_size
-        shares = int(position_value / current_price)
-        
-        return {
-            'position_size_pct': adjusted_size,
-            'position_value': position_value,
-            'shares': shares,
-            'base_size': base_size,
-            'vol_adjustment': vol_adjustment,
-            'heat_adjustment': heat_adjustment,
-            'sector_adjustment': sector_adjustment,
-            'sector': sector
-        }
-    
-    def calculate_stop_levels(self, symbol: str, entry_price: float, 
-                             prediction: str, volatility: float) -> Dict:
-        """Calculate dynamic stop-loss and take-profit levels"""
-        
-        # Volatility-adjusted stops
-        vol_multiplier = max(1.0, volatility * 50)  # Scale volatility
-        
-        if prediction == 'up':
-            stop_loss = entry_price * (1 - self.default_stop_loss * vol_multiplier)
-            take_profit = entry_price * (1 + self.default_take_profit * vol_multiplier)
-        else:  # 'down' - short position
-            stop_loss = entry_price * (1 + self.default_stop_loss * vol_multiplier)
-            take_profit = entry_price * (1 - self.default_take_profit * vol_multiplier)
-        
-        return {
-            'stop_loss': stop_loss,
-            'take_profit': take_profit,
-            'vol_multiplier': vol_multiplier,
-            'risk_reward_ratio': self.default_take_profit / self.default_stop_loss
-        }
-    
-    def check_risk_limits(self, new_trade: Dict) -> Dict:
-        """Check if new trade violates risk limits"""
-        checks = {
-            'passed': True,
-            'violations': [],
-            'warnings': []
-        }
-        
-        # Position size check
-        if new_trade['position_size_pct'] > self.max_position_size:
-            checks['passed'] = False
-            checks['violations'].append(f"Position size {new_trade['position_size_pct']:.1%} exceeds limit {self.max_position_size:.1%}")
-        
-        # Sector concentration check
-        sector = new_trade.get('sector', 'other')
-        current_sector_exposure = self._calculate_sector_exposure(sector)
-        if current_sector_exposure + new_trade['position_size_pct'] > self.max_sector_exposure:
-            checks['passed'] = False
-            checks['violations'].append(f"Sector exposure would exceed {self.max_sector_exposure:.1%}")
-        
-        # Portfolio heat check
-        portfolio_heat = self._calculate_portfolio_heat()
-        if portfolio_heat > 0.8:  # 80% of capital at risk
-            checks['warnings'].append(f"High portfolio heat: {portfolio_heat:.1%}")
-        
-        # Drawdown check
-        current_drawdown = self._calculate_current_drawdown()
-        if current_drawdown < -self.max_drawdown_limit:
-            checks['passed'] = False
-            checks['violations'].append(f"Drawdown {current_drawdown:.1%} exceeds limit {self.max_drawdown_limit:.1%}")
-        
-        return checks
-    
-    def _calculate_portfolio_heat(self) -> float:
-        """Calculate percentage of capital currently at risk"""
-        total_risk = sum(
-            abs(pos['shares'] * pos['entry_price']) 
-            for pos in self.positions.values()
-        )
-        return total_risk / self.current_capital if self.current_capital > 0 else 0
-    
-    def _calculate_sector_exposure(self, sector: str) -> float:
-        """Calculate current exposure to a specific sector"""
-        sector_value = sum(
-            abs(pos['shares'] * pos['entry_price']) 
-            for symbol, pos in self.positions.items()
-            if self.sector_map.get(symbol, 'other') == sector
-        )
-        return sector_value / self.current_capital if self.current_capital > 0 else 0
-    
-    def _calculate_current_drawdown(self) -> float:
-        """Calculate current drawdown from peak capital"""
-        if not hasattr(self, 'peak_capital'):
-            self.peak_capital = self.initial_capital
-        
-        self.peak_capital = max(self.peak_capital, self.current_capital)
-        return (self.current_capital - self.peak_capital) / self.peak_capital
-    
-    def get_portfolio_summary(self) -> Dict:
-        """Get comprehensive portfolio risk summary"""
-        return {
-            'current_capital': self.current_capital,
-            'total_return': (self.current_capital - self.initial_capital) / self.initial_capital,
-            'positions_count': len(self.positions),
-            'portfolio_heat': self._calculate_portfolio_heat(),
-            'current_drawdown': self._calculate_current_drawdown(),
-            'sector_exposures': {
-                sector: self._calculate_sector_exposure(sector) 
-                for sector in set(self.sector_map.values())
-            },
-            'unrealized_pnl': sum(pos['unrealized_pnl'] for pos in self.positions.values()),
-            'average_daily_return': np.mean(self.daily_returns) if self.daily_returns else 0,
-            'daily_volatility': np.std(self.daily_returns) if len(self.daily_returns) > 1 else 0
-        }
 
-class ConfidenceCalibrator:
-    """Calibrates model confidence to match actual accuracy"""
-    
-    def __init__(self):
-        self.historical_predictions = []
-        self.calibration_curve = {}
-        self.is_calibrated = False
-        
-    def add_prediction_result(self, predicted_confidence: float, was_correct: bool, 
-                            market_condition: str = 'normal', volatility: float = 0.02):
-        """Add a prediction result for calibration"""
-        self.historical_predictions.append({
-            'confidence': predicted_confidence,
-            'correct': was_correct,
-            'market_condition': market_condition,
-            'volatility': volatility
-        })
-    
-    def calibrate_confidence(self):
-        """Build confidence calibration curve from historical data"""
-        if len(self.historical_predictions) < 50:
-            print("Warning: Insufficient data for confidence calibration")
-            return
-        
-        # Group predictions by confidence buckets
-        confidence_buckets = {
-            0.6: [], 0.7: [], 0.8: [], 0.9: [], 0.95: [], 0.99: []
-        }
-        
-        for pred in self.historical_predictions:
-            conf = pred['confidence']
-            # Assign to nearest bucket
-            bucket = min(confidence_buckets.keys(), key=lambda x: abs(x - conf))
-            confidence_buckets[bucket].append(pred)
-        
-        # Calculate actual accuracy for each bucket
-        self.calibration_curve = {}
-        for bucket_conf, predictions in confidence_buckets.items():
-            if predictions:
-                actual_accuracy = sum(p['correct'] for p in predictions) / len(predictions)
-                
-                # Adjust for market conditions
-                normal_preds = [p for p in predictions if p['market_condition'] == 'normal']
-                stress_preds = [p for p in predictions if p['market_condition'] in ['crash', 'correction']]
-                
-                normal_acc = sum(p['correct'] for p in normal_preds) / len(normal_preds) if normal_preds else actual_accuracy
-                stress_acc = sum(p['correct'] for p in stress_preds) / len(stress_preds) if stress_preds else actual_accuracy
-                
-                self.calibration_curve[bucket_conf] = {
-                    'actual_accuracy': actual_accuracy,
-                    'normal_accuracy': normal_acc,
-                    'stress_accuracy': stress_acc,
-                    'sample_count': len(predictions)
-                }
-        
-        self.is_calibrated = True
-        print(f"Confidence calibration completed with {len(self.historical_predictions)} samples")
-    
-    def calibrate_prediction_confidence(self, raw_confidence: float, 
-                                      market_condition: str = 'normal',
-                                      volatility: float = 0.02) -> float:
-        """Calibrate raw model confidence to actual expected accuracy"""
-        if not self.is_calibrated:
-            # Use conservative calibration without historical data
-            return self._conservative_calibration(raw_confidence, market_condition, volatility)
-        
-        # Find nearest calibration bucket
-        bucket = min(self.calibration_curve.keys(), key=lambda x: abs(x - raw_confidence))
-        calibration_data = self.calibration_curve[bucket]
-        
-        # Use appropriate accuracy based on market condition
-        if market_condition in ['crash', 'correction', 'stress']:
-            expected_accuracy = calibration_data['stress_accuracy']
-        else:
-            expected_accuracy = calibration_data['normal_accuracy']
-        
-        # Apply volatility adjustment
-        vol_penalty = min(0.1, (volatility - 0.02) * 2)  # Reduce confidence in high vol
-        calibrated_confidence = max(0.5, expected_accuracy - vol_penalty)
-        
-        return calibrated_confidence
-    
-    def _conservative_calibration(self, raw_confidence: float, 
-                                market_condition: str, volatility: float) -> float:
-        """Conservative calibration when no historical data available"""
-        # More reasonable calibration - still conservative but tradeable
-        if raw_confidence > 0.95:
-            base_conf = 0.75  # Still discount but not as heavily
-        elif raw_confidence > 0.9:
-            base_conf = 0.70
-        elif raw_confidence > 0.8:
-            base_conf = 0.65
-        else:
-            base_conf = raw_confidence * 0.9  # Smaller discount
-        
-        # Moderate reduction during stress (not as severe)
-        if market_condition in ['crash', 'correction', 'stress']:
-            base_conf *= 0.85  # Less severe penalty
-        
-        # Smaller volatility penalty
-        vol_penalty = min(0.05, volatility * 2)
-        
-        return max(0.55, base_conf - vol_penalty)
-
-class MarketRegimeDetector:
-    """Detects current market regime for adaptive predictions"""
-    
-    def __init__(self):
-        self.regime_history = []
-        
-    def detect_market_regime(self, spy_data: pd.DataFrame, vix_level: float = None) -> Dict:
-        """Detect current market regime"""
-        
-        if len(spy_data) < 20:
-            return {'regime': 'unknown', 'confidence': 0.5, 'volatility': 0.02}
-        
-        # Calculate recent performance metrics
-        recent_returns = spy_data['Close'].pct_change().tail(20)
-        recent_volatility = recent_returns.std()
-        recent_trend = recent_returns.mean()
-        
-        # VIX analysis if available
-        if vix_level is None:
-            vix_level = 20  # Default assumption
-        
-        # Regime classification
-        if vix_level > 35 and recent_volatility > 0.03:
-            regime = 'crisis'
-            regime_confidence = 0.9
-        elif vix_level > 25 and recent_trend < -0.001:
-            regime = 'correction'
-            regime_confidence = 0.8
-        elif recent_volatility > 0.025:
-            regime = 'volatile'
-            regime_confidence = 0.7
-        elif abs(recent_trend) < 0.0005:
-            regime = 'sideways'
-            regime_confidence = 0.7
-        elif recent_trend > 0.001:
-            regime = 'bull'
-            regime_confidence = 0.8
-        else:
-            regime = 'normal'
-            regime_confidence = 0.6
-        
-        regime_data = {
-            'regime': regime,
-            'confidence': regime_confidence,
-            'volatility': recent_volatility,
-            'trend': recent_trend,
-            'vix_level': vix_level
-        }
-        
-        self.regime_history.append(regime_data)
-        return regime_data

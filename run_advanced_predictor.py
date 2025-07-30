@@ -204,7 +204,7 @@ class EnhancedStockPredictor(AdvancedStockPredictor):
                 return {'success': False, 'reason': 'invalid price data'}
             
             # Engineer technical features
-            features_df = self.feature_engineer.engineer_features(df, market_indices)
+            features_df = self.feature_engineer.engineer_features(df, market_indices, symbol)
             
             # Add sentiment features
             if use_sentiment:
@@ -440,7 +440,7 @@ def run_advanced_training(ticker_selection='all', use_sentiment=True, quick_mode
     
     if len(data) < 10:
         print("Error: Insufficient data collected. Exiting.")
-        return None
+        return None, None
     
     # Prepare training data
     train_data = predictor.prepare_training_data_enhanced(data, use_sentiment=use_sentiment)
